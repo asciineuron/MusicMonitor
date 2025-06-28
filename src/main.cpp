@@ -15,6 +15,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <span>
 namespace fs = std::filesystem;
 
 // AsciiNeuron - limit global vars scope
@@ -24,7 +25,7 @@ std::mutex mxSyncFSEventStreamToFolderManager;
 bool isRunning;
 bool doIndex = true;
 
-void fileListExecutor(std::string command, std::vector<fs::path> filenames,
+void fileListExecutor(std::string command, std::span<const fs::path> filenames,
                       bool doParallel) {
   // do basic fork exec for the command on each filename
   if (doParallel) {
@@ -69,11 +70,6 @@ void fileListExecutor(std::string command, std::vector<fs::path> filenames,
 }
 
 class FolderScanner {
-  // callback gives changed directories
-  // for each, this will travel thru all subfiles,
-  // see if they are newer than last check, and return list of file names or
-  // descriptors for all, or more recent ones
-  // use nftw... or fts_open()... or filesystem api!
 public:
   FolderScanner(fs::path directory) : m_directoryRoot(directory) { scan(); }
 
@@ -82,11 +78,9 @@ public:
          fs::recursive_directory_iterator(m_directoryRoot)) {
       FileUpdateType type;
       fs::file_time_type entryTime = entry.last_write_time();
-      // std::cout << "line: " <<  __LINE__ << " \n";
       bool wasTracked = m_files.contains(entry.path());
       std::pair<FileUpdateType, fs::file_time_type> &updateFile =
           m_files[entry.path()]; // get or insert in either case...
-      std::cout << "line: " <<  __LINE__ << " \n";
       if (wasTracked) {
         type = entryTime > updateFile.second ? Updated : Old;
       } else {
@@ -107,15 +101,8 @@ public:
   }
 
 private:
-  int m_fd_limit{3};
   std::filesystem::path m_directoryRoot;
-  enum FileUpdateType { New, Updated, Old }; // compared against last unix time
-  // struct FileStat {
-  //   fs::path name;
-  //   FileUpdateType status;
-  //   time_t timestamp; // can still use posixy stuff here :)
-  // };
-  // std::vector<FileStat> m_files;
+  enum FileUpdateType { New, Updated, Old };
   std::unordered_map<fs::path, std::pair<FileUpdateType, fs::file_time_type>>
       m_files;
 };
@@ -124,9 +111,6 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
               size_t numEvents, void *evPaths,
               const FSEventStreamEventFlags evFlags[],
               const FSEventStreamEventId evIds[]) {
-  // TODO global state here too... let's write to a file and the folderscanner
-  // loop can wait on the file change to notify the executor!
-  // ACTUALLY don't need to do anything since just here to hang/wait the indexer
   {
     std::lock_guard<std::mutex> doIndexGuard(
         mxSyncFSEventStreamToFolderManager);
@@ -184,7 +168,6 @@ public:
     m_latestEventId = FSEventStreamGetLatestEventId(m_stream);
     std::cout << "last event id: " << m_latestEventId << "\n";
 
-    // exit_cleanup(0);
     std::ofstream outfilelog(m_logFile, std::ios::out | std::ios::trunc);
     if (outfilelog) {
       outfilelog << m_latestEventId;
@@ -235,9 +218,6 @@ private:
   std::vector<fs::path> m_trackedFolders;
   std::vector<FolderScanner>
       m_trackedFoldersScanners; // can retrieve matching filename from here
-  // std::vector<std::string>
-  //     m_filesToProcess;       // TODO remove from here, but pass to the
-  //                             // converter-executor class instead
   fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
   FSEventStreamEventId m_latestEventId;
   std::string m_logFile; // where to load/save latest event id etc
@@ -266,13 +246,6 @@ int main(int argc, char *argv[]) {
 
   std::vector<fs::path> paths;
   for (int i = 1; i < argc; ++i) {
-    // // paths.emplace_back(fs::relative(fs::path(argv[i])));
-    // // paths.push_back(fs::path(argv[i]));
-    // std::string st = (argv[i]);
-    // std::cout << st << "\n";
-    // fs::path fp = st;
-    // paths.push_back(fp);
-    // std::cout << "str: " << paths[i-1].string() << "\n";
     paths.emplace_back(argv[i]);
     std::error_code ec;
     if (!fs::is_directory(paths[i - 1], ec)) {
