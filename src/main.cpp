@@ -25,7 +25,6 @@ namespace AN {
 std::condition_variable cvSyncFSEventStreamToFolderManager;
 std::mutex mxSyncFSEventStreamToFolderManager;
 bool isRunning;
-bool doIndex = true;
 
 void fileListExecutor(std::string command, std::span<const fs::path> filenames,
                       bool doParallel) {
@@ -118,11 +117,6 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
               size_t numEvents, void *evPaths,
               const FSEventStreamEventFlags evFlags[],
               const FSEventStreamEventId evIds[]) {
-  {
-    std::lock_guard<std::mutex> doIndexGuard(
-        mxSyncFSEventStreamToFolderManager);
-    doIndex = true;
-  }
   // this needs to come after the lock_guard is released:
   cvSyncFSEventStreamToFolderManager.notify_all();
   std::cout << "notified at line: " << __LINE__ << " \n";
@@ -199,8 +193,7 @@ public:
         std::cout << "line: " << __LINE__ << " \n";
         std::unique_lock<std::mutex> uniqueLock(
             mxSyncFSEventStreamToFolderManager);
-        cvSyncFSEventStreamToFolderManager.wait(uniqueLock,
-                                                [] { return doIndex; });
+        cvSyncFSEventStreamToFolderManager.wait(uniqueLock);
         uniqueLock.unlock(); // wait locks mutex so need to release
         std::cout << "line: " << __LINE__ << " \n";
         std::vector<fs::path> filesToProcess;
@@ -217,12 +210,6 @@ public:
         // pass to executor
         std::cout << "line: " << __LINE__ << " \n";
         fileListExecutor(this->m_converterExe, filesToProcess, false);
-
-        // don't index until enabled by callback again:
-        {
-          std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
-          doIndex = false;
-        }
       }
     });
 
