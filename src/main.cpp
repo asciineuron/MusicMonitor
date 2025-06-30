@@ -10,13 +10,15 @@
 #include <mutex>
 #include <poll.h>
 #include <signal.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
-#include <span>
 namespace fs = std::filesystem;
+
+// TODO note: sometimes it gets to ls, sometimes not, regardless of whether I've touched files, either before or during run
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
@@ -35,8 +37,8 @@ void fileListExecutor(std::string command, std::span<const fs::path> filenames,
       int argc = 2; // command and 1 file
       char **argv = static_cast<char **>(malloc(sizeof(char) * (argc + 1)));
       argv[0] = static_cast<char *>(malloc(sizeof(char) * command.size()));
-      argv[1] = static_cast<char *>(
-          malloc(sizeof(char) * file.string().size()));
+      argv[1] =
+          static_cast<char *>(malloc(sizeof(char) * file.string().size()));
       argv[2] = nullptr;
 
       int ps = fork();
@@ -65,13 +67,18 @@ void fileListExecutor(std::string command, std::span<const fs::path> filenames,
     if (!ps) {
       execv(command.c_str(), argv);
     } else {
+      int ret;
+      waitpid(ps, &ret, 0);
+      std::cout << "finished waiting for " << ps << " all files\n";
     }
   }
 }
 
 class FolderScanner {
 public:
-  FolderScanner(fs::path directory) : m_directoryRoot(directory) { scan(); }
+  // don't scan yet since blocks callback? maybe actually ok
+  // TODO separate out to precheck, do scan wait later
+  FolderScanner(fs::path directory) : m_directoryRoot(directory) { scan(); } 
 
   int scan() {
     for (const fs::directory_entry &entry :
@@ -118,7 +125,7 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
   }
   // this needs to come after the lock_guard is released:
   cvSyncFSEventStreamToFolderManager.notify_all();
-  std::cout << "line: " << __LINE__ << " \n";
+  std::cout << "notified at line: " << __LINE__ << " \n";
 }
 
 class FoldersManager {
@@ -147,6 +154,7 @@ public:
         if (infilelog >> m_latestEventId) {
           std::cout << "restoring latest event id: " << m_latestEventId;
         } else {
+          std::cout << "starting timestamp now \n";
           m_latestEventId = kFSEventStreamEventIdSinceNow;
         }
       }
@@ -178,15 +186,22 @@ public:
   }
 
   void run() {
+    isRunning = true;
     // launch a thread
     std::thread thread([this]() {
-      while (isRunning) {
+      while (1) {
+        {
+          std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
+          if (!isRunning)
+            break;
+        }
         // first wait for pipe/mutex+cv
         std::cout << "line: " << __LINE__ << " \n";
         std::unique_lock<std::mutex> uniqueLock(
             mxSyncFSEventStreamToFolderManager);
         cvSyncFSEventStreamToFolderManager.wait(uniqueLock,
                                                 [] { return doIndex; });
+        uniqueLock.unlock(); // wait locks mutex so need to release
         std::cout << "line: " << __LINE__ << " \n";
         std::vector<fs::path> filesToProcess;
         // index and get list of all new files:
@@ -202,13 +217,15 @@ public:
         // pass to executor
         std::cout << "line: " << __LINE__ << " \n";
         fileListExecutor(this->m_converterExe, filesToProcess, false);
+
+        // don't index until enabled by callback again:
+        {
+          std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
+          doIndex = false;
+        }
       }
     });
 
-    {
-      std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
-      doIndex = false;
-    }
     thread.join();
   }
 
@@ -255,119 +272,9 @@ int main(int argc, char *argv[]) {
       exit(EXIT_FAILURE);
     }
   }
+
   AN::FoldersManager folderManager(paths);
-  AN::isRunning = true;
   folderManager.run();
 
   return 0;
 }
-
-// TODO remove ----- all below
-// const char *newestfilelog = "/Volumes/Ext/Code/MusicMonitor/latestEvent.txt";
-// FSEventStreamEventId latestEventId;
-// char latestEventIdStr[9]; // to hold uint64 plus null
-
-// void exit_cleanup(int sig) {
-//   // std::ofstream outfilelog(newestfilelog, std::ios::out |
-//   std::ios::trunc);
-//   // if (outfilelog) {
-//   //   outfilelog << latestEventId;
-//   // }
-//   // write(0, "caught Ctrl-C and gracefully saving file timestamp log\n",
-//   56);
-//   // int fd = open(newestfilelog, O_WRONLY | O_TRUNC);
-//   // if (fd == -1) {
-//   //   write(1, "failed to open timestamp file", 30);
-//   // }
-//   // write(fd, &latestEventIdStr, sizeof(latestEventIdStr));
-//   write(2, "handling exit", 14);
-// }
-
-// void callback2(ConstFSEventStreamRef stream, void *callbackInfo,
-//                size_t numEvents, void *evPaths,
-//                const FSEventStreamEventFlags evFlags[],
-//                const FSEventStreamEventId evIds[]) {
-//   std::cout << "callback hit!" << std::endl;
-
-//   char **occurredpaths = static_cast<char **>(evPaths);
-//   for (size_t i = 0; i < numEvents; i++) {
-//     std::cout << occurredpaths[i] << " ; " << evFlags[i] << " ; " << evIds[i]
-//               << "\n";
-//     FolderScanner fs(occurredpaths[i]);
-//   }
-//   std::cout << "\n";
-
-//   latestEventId = FSEventStreamGetLatestEventId(
-//       stream); // continually save this in case of SIGINT
-//   snprintf(latestEventIdStr, 9, "%llu", latestEventId);
-// }
-
-// int main(int argc, char *argv[]) { // TODO remove
-//   // register signal handling:
-//   struct sigaction sigact = {exit_cleanup, 0, 0};
-//   if (sigaction(SIGINT, &sigact, nullptr) == -1) {
-//     std::cerr << "failed to register sigaction\n";
-//     return EXIT_FAILURE;
-//   }
-
-//   for (int i = 1; i < argc; ++i) {
-//     std::cout << argv[i] << "\n";
-//   }
-//   if (argc < 2) {
-//     std::cerr << "Must supply path to monitor" << "\n";
-//     return EXIT_FAILURE;
-//   }
-
-//   CFStringRef arg = CFStringCreateWithCString(kCFAllocatorDefault, argv[1],
-//                                               kCFStringEncodingUTF8);
-//   CFArrayRef paths = CFArrayCreate(NULL, (const void **)&arg, 1, NULL);
-
-//   CFAbsoluteTime latency = 3.0;
-
-//   FSEventStreamEventId sincewhen;
-//   {
-//     std::ifstream infilelog(newestfilelog, std::ios::in);
-//     if (infilelog >> sincewhen) {
-//       std::cout << "restoring latest event id: " << sincewhen;
-//     } else {
-//       sincewhen = kFSEventStreamEventIdSinceNow;
-//     }
-//   }
-
-//   FSEventStreamRef stream =
-//       FSEventStreamCreate(NULL, &callback2, nullptr, paths, sincewhen,
-//       latency,
-//                           kFSEventStreamCreateFlagNone);
-
-//   dispatch_queue_t queue =
-//       dispatch_queue_create(nullptr, DISPATCH_QUEUE_CONCURRENT);
-
-//   FSEventStreamSetDispatchQueue(stream, queue);
-//   if (!FSEventStreamStart(stream)) {
-//     std::cerr << "Failed to start stream\n";
-//     return EXIT_FAILURE;
-//   }
-
-//   std::cout << "eventID ; Flag ; Path\n";
-
-//   // CFRunLoopRun(); no need, getline works instead, let's look into portable
-//   // poll() or select()
-
-//   std::string instr;
-//   while (std::getline(std::cin, instr))
-//     ;
-
-//   std::cout << "ending" << std::endl;
-//   latestEventId = FSEventStreamGetLatestEventId(stream);
-//   std::cout << "last event id: " << latestEventId << "\n";
-
-//   // exit_cleanup(0);
-//   std::ofstream outfilelog(newestfilelog, std::ios::out | std::ios::trunc);
-//   if (outfilelog) {
-//     outfilelog << latestEventId;
-//   }
-//   dispatch_release(queue);
-//   FSEventStreamInvalidate(stream);
-//   FSEventStreamRelease(stream);
-//   return EXIT_SUCCESS;
-// }
