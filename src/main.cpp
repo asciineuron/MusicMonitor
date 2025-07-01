@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -14,16 +15,26 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <sys/termios.h>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <algorithm>
-#include <ranges>;
+#include <ranges>
+#include <termios.h>
+#include <unistd.h>     //STDIN_FILENO
+// #include <curses.h>
+
+namespace fs = std::filesystem;
+// namespace ranges = std::ranges;
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
-namespace fs = std::filesystem;
-// namespace ranges = std::ranges;
+
+// some simple data to share from calling main and the run thread
+struct ThreadAccess {
+  std::atomic_bool shouldQuit;
+};
 
 std::condition_variable cvSyncFSEventStreamToFolderManager;
 std::mutex mxSyncFSEventStreamToFolderManager;
@@ -170,9 +181,9 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
 
 class FoldersManager {
 public:
-  FoldersManager(std::vector<fs::path> folderNames)
-      : m_trackedFolders(folderNames) {
-    // set upfolderscanner handlers:
+  FoldersManager(ThreadAccess &access, std::vector<fs::path> folderNames)
+      : m_threadAccess(access), m_trackedFolders(folderNames) {
+    // set up folderscanner handlers:
     for (const auto &folderName : folderNames) {
       m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
     }
@@ -228,8 +239,8 @@ public:
   void run() {
     isRunning = true;
     // launch a thread
-    std::thread thread([this]() {
-      while (1) {
+    m_runner = std::thread([this]() {
+      while (!m_threadAccess.shouldQuit) {
         {
           std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
           if (!isRunning)
@@ -258,12 +269,15 @@ public:
         // pass to executor
         fileListExecutor(this->m_converterExe, filesToProcess, false);
       }
+      std::cout << "NOTE I am quitting nicely\n";
     });
 
-    thread.join();
+    m_runner.join();
   }
 
 private:
+  ThreadAccess &m_threadAccess; // shared state from calling code to start/end
+  std::thread m_runner;
   FSEventStreamRef m_stream;
   dispatch_queue_t m_queue;
   std::vector<fs::path> m_trackedFolders;
@@ -295,9 +309,9 @@ int main(int argc, char *argv[]) {
     std::cerr << "Need to specify one or more paths to monitor.\n";
     exit(EXIT_FAILURE);
   }
-  for (int i = 0; i < argc; i++) {
-    std::cout << argv[i] << "\n";
-  }
+  // for (int i = 0; i < argc; i++) {
+  //   std::cout << argv[i] << "\n";
+  // }
 
   std::vector<fs::path> paths;
   for (int i = 1; i < argc; ++i) {
@@ -311,8 +325,62 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  AN::FoldersManager folderManager(paths);
-  folderManager.run();
+  AN::ThreadAccess threadAccess = {false};
 
+  std::thread folderManagerThread([&]() {
+    AN::FoldersManager folderManager(threadAccess, paths);
+    folderManager.run();
+  });
+
+  // set up user input or server-client socket handling
+  // char input;
+  // while (std::cin >> input  ) {
+  //   std::cout << "you said: " << input << " ";
+  // }
+  // NCURSES
+  // filter(); // don't clear the terminal when starting
+  // initscr();
+  // cbreak(); // don't wait for enter to read user input
+  // char input;
+  // while (1) {
+  //   input = getch();
+  //   int x, y;
+  //   getyx(stdscr, y, x);
+
+  //   mvprintw(y+1, x, "you said: %c\n", input);
+  // }
+  // printw("hi");
+
+  struct termios termOld, termNew;
+  tcgetattr(STDIN_FILENO, &termOld);
+  termNew = termOld;
+  // turn off icanon from appropriate flag group, and other qol flags
+  termNew.c_lflag &= ~(ICANON | ECHO);
+
+  termNew.c_iflag &= INLCR; //OPOST;//ONLCR;//INLCR;
+
+  // note need to get out of this mode to do serious printing... instead just
+  // loop entering this mode until command, then process normally
+  // nope still problematic
+  bool textLoopRunning = true;
+  tcsetattr(STDIN_FILENO, TCSANOW, &termNew); // set immediately
+  while (textLoopRunning) {
+    char c = getchar();
+    // tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
+    // printf("you said: %c\n\r", c);
+    if (c == 'q') {
+      printf("quitting\n\r");
+      threadAccess.shouldQuit = true;
+    }
+  }
+  tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
+
+  // still need 2 ctrl-c to fully quit...
+
+  folderManagerThread.join();
   return 0;
 }
+
+// TODO Note termios.h ICANON mode allows control over realtime input but limits
+// buffering etc
+// see https://stackoverflow.com/questions/1798511/how-to-avoid-pressing-enter-with-getchar-for-reading-a-single-character-only
