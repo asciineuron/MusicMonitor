@@ -30,12 +30,14 @@ void printArgs(int argc, char *argv[]) {
   }
 }
 
-void fileListExecutor(const fs::path &command, std::span<const fs::path> filenames,
-                      bool doParallel) {
-  std::cout << command.c_str() << ", " << command.string().length() << "\n";
+void fileListExecutor(const fs::path &command,
+                      std::span<const fs::path> filenames, bool doParallel) {
   const int commandLen = strlen(command.c_str());
+
   // do basic fork exec for the command on each filename
   if (doParallel) {
+    // wrap in a thread loop:
+    std::vector<std::thread> threads;
     // fork 'command' for each and every filename
     for (const auto &file : filenames) {
       // first set up argv char**
@@ -49,33 +51,41 @@ void fileListExecutor(const fs::path &command, std::span<const fs::path> filenam
       strcpy(argv[0], command.c_str());
       strcpy(argv[1], file.c_str());
       argv[2] = nullptr;
-      // printArgs(argc, argv);
 
-      int ps = fork();
-      if (!ps) {
-        // child
-        execv(command.c_str(), argv);
-      } else {
-        int ret;
-        // later how to parallelize, wrap the loop inside in a thread?
-        waitpid(ps, &ret, 0);
-        std::cout << "Finished waiting for " << ps << " : " << file << "\n";
-      }
+      // printArgs(argc, argv);
+      threads.emplace_back(std::thread([&]() {
+        int ps = fork();
+        if (!ps) {
+          // child
+          execv(command.c_str(), argv);
+        } else {
+          int ret;
+          if (waitpid(ps, &ret, 0) == -1) {
+            std::cerr << "Error waiting for pid: " << ps << "\n";
+            exit(EXIT_FAILURE);
+          }
+        }
+      }));
     }
+
+    for (auto &thread : threads) {
+      thread.join();
+    }
+
   } else {
     // all filenames piped to single 'command' fork
     // first set up argv char**
     int argc = 1 + filenames.size(); // +1 for 0th ie executable name
-    char **argv = static_cast<char **>(malloc(sizeof(char) * (argc + 1))); // +1 for final null element
+    char **argv = static_cast<char **>(
+        malloc(sizeof(char) * (argc + 1))); // +1 for final null element
 
-    argv[0] =
-        static_cast<char *>(malloc(sizeof(char) * (commandLen+1)));
+    argv[0] = static_cast<char *>(malloc(sizeof(char) * (commandLen + 1)));
     strcpy(argv[0], command.c_str());
 
     for (int i = 1; i < argc; ++i) {
       argv[i] = static_cast<char *>(
-          malloc(sizeof(char) * (strlen(filenames[i-1].c_str())+1)));
-      strcpy(argv[i], filenames[i-1].c_str());
+          malloc(sizeof(char) * (strlen(filenames[i - 1].c_str()) + 1)));
+      strcpy(argv[i], filenames[i - 1].c_str());
     }
     argv[argc] = nullptr;
     // printArgs(argc, argv);
@@ -85,8 +95,10 @@ void fileListExecutor(const fs::path &command, std::span<const fs::path> filenam
       execv(command.c_str(), argv);
     } else {
       int ret;
-      waitpid(ps, &ret, 0);
-      std::cout << "Finished waiting for " << ps << "\n";
+      if (waitpid(ps, &ret, 0) == -1) {
+        std::cerr << "Error waiting for pid: " << ps << "\n";
+        exit(EXIT_FAILURE);
+      }
     }
   }
 }
@@ -95,7 +107,7 @@ class FolderScanner {
 public:
   // don't scan yet since blocks callback? maybe actually ok
   // TODO separate out to precheck, do scan wait later
-  FolderScanner(fs::path directory) : m_directoryRoot(directory) { scan(); } 
+  FolderScanner(fs::path directory) : m_directoryRoot(directory) { scan(); }
 
   int scan() {
     for (const fs::directory_entry &entry :
@@ -228,7 +240,7 @@ public:
         }
 
         // pass to executor
-        fileListExecutor(this->m_converterExe, filesToProcess, true);
+        fileListExecutor(this->m_converterExe, filesToProcess, false);
       }
     });
 
