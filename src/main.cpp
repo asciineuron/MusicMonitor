@@ -23,6 +23,7 @@
 #include <ranges>
 #include <termios.h>
 #include <unistd.h>     //STDIN_FILENO
+#include "log.hpp"
 // #include <curses.h>
 
 namespace fs = std::filesystem;
@@ -279,9 +280,9 @@ public:
       }
       std::cout << "NOTE I am quitting nicely\n";
     });
-
-    m_runner.join();
   }
+
+  void stop() { m_runner.join(); }
 
 private:
   std::thread m_runner;
@@ -304,6 +305,7 @@ void exit_cleanup(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+  AN::Log::printFmt("Hello world!\n", {AN::Log::AnsiAttributes::Underline});
   // TODO split into pseudo client server. Check socket if running, if so client
   // else server. use to query stats etc
 
@@ -334,10 +336,12 @@ int main(int argc, char *argv[]) {
 
   AN::accessManager.shouldQuit.store(false);
 
-  std::thread folderManagerThread([&]() {
-    AN::FoldersManager folderManager(paths);
-    folderManager.run();
-  });
+  // std::thread folderManagerThread([&]() {
+  //   AN::FoldersManager folderManager(paths);
+  //   folderManager.run();
+  // });
+  AN::FoldersManager folderManager(paths);
+  folderManager.run();
 
   // set up user input or server-client socket handling
   // char input;
@@ -388,7 +392,8 @@ int main(int argc, char *argv[]) {
 
   // still need 2 ctrl-c to fully quit...
 
-  folderManagerThread.join();
+  // folderManagerThread.join();
+  folderManager.stop();
   return 0;
 }
 
