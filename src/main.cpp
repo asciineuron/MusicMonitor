@@ -1,4 +1,5 @@
 #include <CoreServices/CoreServices.h>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -16,10 +17,14 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
-namespace fs = std::filesystem;
+#include <algorithm>
+#include <ranges>;
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
+namespace fs = std::filesystem;
+// namespace ranges = std::ranges;
+
 std::condition_variable cvSyncFSEventStreamToFolderManager;
 std::mutex mxSyncFSEventStreamToFolderManager;
 bool isRunning;
@@ -112,6 +117,9 @@ public:
   int scan() {
     for (const fs::directory_entry &entry :
          fs::recursive_directory_iterator(m_directoryRoot)) {
+      if (!isValidExtension(entry))
+        continue;
+
       FileUpdateType type;
       fs::file_time_type entryTime = entry.last_write_time();
       bool wasTracked = m_files.contains(entry.path());
@@ -128,6 +136,13 @@ public:
     return 1;
   }
 
+  bool isValidExtension(const fs::directory_entry &entry) {
+    return std::any_of(m_filetypeFilter.begin(), m_filetypeFilter.end(),
+                       [&](const std::string_view filetype) {
+                         return filetype == entry.path().extension();
+                       });
+  }
+
   std::vector<fs::path> getNewFiles() {
     std::vector<fs::path> outFiles;
     for (auto &f : m_files) {
@@ -141,6 +156,7 @@ private:
   enum FileUpdateType { New, Updated, Old };
   std::unordered_map<fs::path, std::pair<FileUpdateType, fs::file_time_type>>
       m_files;
+  std::vector<std::string> m_filetypeFilter{{".flac"}, {".txt"}};
 };
 
 void callback(ConstFSEventStreamRef stream, void *callbackInfo,
