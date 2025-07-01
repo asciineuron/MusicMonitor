@@ -18,27 +18,38 @@
 #include <unordered_map>
 namespace fs = std::filesystem;
 
-// TODO note: sometimes it gets to ls, sometimes not, regardless of whether I've touched files, either before or during run
-
 // AsciiNeuron - limit global vars scope
 namespace AN {
 std::condition_variable cvSyncFSEventStreamToFolderManager;
 std::mutex mxSyncFSEventStreamToFolderManager;
 bool isRunning;
 
-void fileListExecutor(std::string command, std::span<const fs::path> filenames,
+void printArgs(int argc, char *argv[]) {
+  for (int i = 0; i < argc; ++i) {
+    std::cout << i << " : " << argv[i] << "\n";
+  }
+}
+
+void fileListExecutor(const fs::path &command, std::span<const fs::path> filenames,
                       bool doParallel) {
+  std::cout << command.c_str() << ", " << command.string().length() << "\n";
+  const int commandLen = strlen(command.c_str());
   // do basic fork exec for the command on each filename
   if (doParallel) {
     // fork 'command' for each and every filename
     for (const auto &file : filenames) {
       // first set up argv char**
+      // allocate space
       int argc = 2; // command and 1 file
       char **argv = static_cast<char **>(malloc(sizeof(char) * (argc + 1)));
-      argv[0] = static_cast<char *>(malloc(sizeof(char) * command.size()));
-      argv[1] =
-          static_cast<char *>(malloc(sizeof(char) * file.string().size()));
+      argv[0] = static_cast<char *>(malloc(sizeof(char) * commandLen + 1));
+      argv[1] = static_cast<char *>(
+          malloc(sizeof(char) * (strlen(file.c_str()) + 1)));
+      // copy contents
+      strcpy(argv[0], command.c_str());
+      strcpy(argv[1], file.c_str());
       argv[2] = nullptr;
+      // printArgs(argc, argv);
 
       int ps = fork();
       if (!ps) {
@@ -48,27 +59,34 @@ void fileListExecutor(std::string command, std::span<const fs::path> filenames,
         int ret;
         // later how to parallelize, wrap the loop inside in a thread?
         waitpid(ps, &ret, 0);
-        std::cout << "finished waiting for " << ps << " : " << file << "\n";
+        std::cout << "Finished waiting for " << ps << " : " << file << "\n";
       }
     }
   } else {
     // all filenames piped to single 'command' fork
     // first set up argv char**
-    int argc = 1 + filenames.size();
-    char **argv = static_cast<char **>(malloc(sizeof(char) * (argc + 1)));
-    argv[0] = static_cast<char *>(malloc(sizeof(char) * command.size()));
+    int argc = 1 + filenames.size(); // +1 for 0th ie executable name
+    char **argv = static_cast<char **>(malloc(sizeof(char) * (argc + 1))); // +1 for final null element
+
+    argv[0] =
+        static_cast<char *>(malloc(sizeof(char) * (commandLen+1)));
+    strcpy(argv[0], command.c_str());
+
     for (int i = 1; i < argc; ++i) {
       argv[i] = static_cast<char *>(
-          malloc(sizeof(char) * filenames[i].string().size()));
+          malloc(sizeof(char) * (strlen(filenames[i-1].c_str())+1)));
+      strcpy(argv[i], filenames[i-1].c_str());
     }
-    argv[argc + 1] = nullptr;
+    argv[argc] = nullptr;
+    // printArgs(argc, argv);
+
     int ps = fork();
     if (!ps) {
       execv(command.c_str(), argv);
     } else {
       int ret;
       waitpid(ps, &ret, 0);
-      std::cout << "finished waiting for " << ps << " all files\n";
+      std::cout << "Finished waiting for " << ps << "\n";
     }
   }
 }
@@ -189,13 +207,13 @@ public:
           if (!isRunning)
             break;
         }
+
         // first wait for pipe/mutex+cv
-        std::cout << "line: " << __LINE__ << " \n";
         std::unique_lock<std::mutex> uniqueLock(
             mxSyncFSEventStreamToFolderManager);
         cvSyncFSEventStreamToFolderManager.wait(uniqueLock);
         uniqueLock.unlock(); // wait locks mutex so need to release
-        std::cout << "line: " << __LINE__ << " \n";
+
         std::vector<fs::path> filesToProcess;
         // index and get list of all new files:
         for (FolderScanner &folderScanner : this->m_trackedFoldersScanners) {
@@ -204,12 +222,13 @@ public:
             exit(EXIT_FAILURE);
           }
           for (const auto &newFile : folderScanner.getNewFiles()) {
+            std::cout << newFile << "\n";
             filesToProcess.push_back(newFile);
           }
         }
+
         // pass to executor
-        std::cout << "line: " << __LINE__ << " \n";
-        fileListExecutor(this->m_converterExe, filesToProcess, false);
+        fileListExecutor(this->m_converterExe, filesToProcess, true);
       }
     });
 
@@ -222,7 +241,8 @@ private:
   std::vector<fs::path> m_trackedFolders;
   std::vector<FolderScanner>
       m_trackedFoldersScanners; // can retrieve matching filename from here
-  fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
+  // fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
+  fs::path m_converterExe{"/bin/echo"}; // name/path of conversion executable
   FSEventStreamEventId m_latestEventId;
   std::string m_logFile; // where to load/save latest event id etc
 };
@@ -235,6 +255,9 @@ void exit_cleanup(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+  // TODO split into pseudo client server. Check socket if running, if so client
+  // else server. use to query stats etc
+
   struct sigaction sigact = {exit_cleanup, 0, 0};
   if (sigaction(SIGINT, &sigact, nullptr) == -1) {
     std::cerr << "failed to register sigaction\n";
