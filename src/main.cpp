@@ -32,9 +32,12 @@ namespace fs = std::filesystem;
 namespace AN {
 
 // some simple data to share from calling main and the run thread
+// atomic instead of cv+mutex
 struct ThreadAccess {
   std::atomic_bool shouldQuit;
 };
+
+ThreadAccess accessManager; // shared state from calling code to start/end :(
 
 std::condition_variable cvSyncFSEventStreamToFolderManager;
 std::mutex mxSyncFSEventStreamToFolderManager;
@@ -176,13 +179,14 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
               const FSEventStreamEventId evIds[]) {
   // this needs to come after the lock_guard is released:
   cvSyncFSEventStreamToFolderManager.notify_all();
+  // accessManager.shouldQuit.notify_all();
   std::cout << "notified at line: " << __LINE__ << " \n";
 }
 
 class FoldersManager {
 public:
-  FoldersManager(ThreadAccess &access, std::vector<fs::path> folderNames)
-      : m_threadAccess(access), m_trackedFolders(folderNames) {
+  FoldersManager(std::vector<fs::path> folderNames)
+      : m_trackedFolders(folderNames) {
     // set up folderscanner handlers:
     for (const auto &folderName : folderNames) {
       m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
@@ -240,7 +244,7 @@ public:
     isRunning = true;
     // launch a thread
     m_runner = std::thread([this]() {
-      while (!m_threadAccess.shouldQuit) {
+      while (1) {
         {
           std::lock_guard<std::mutex> lock(mxSyncFSEventStreamToFolderManager);
           if (!isRunning)
@@ -251,7 +255,11 @@ public:
         std::unique_lock<std::mutex> uniqueLock(
             mxSyncFSEventStreamToFolderManager);
         cvSyncFSEventStreamToFolderManager.wait(uniqueLock);
-        uniqueLock.unlock(); // wait locks mutex so need to release
+        uniqueLock.unlock(); // wait leaves mutex locked so need to release
+        // cvSyncFSEventStreamToFolderManager.wait(uniqueLock, [](){return accessManager.shouldQuit.load();});
+
+        if (accessManager.shouldQuit.load() == true)
+          break;
 
         std::vector<fs::path> filesToProcess;
         // index and get list of all new files:
@@ -276,7 +284,6 @@ public:
   }
 
 private:
-  ThreadAccess &m_threadAccess; // shared state from calling code to start/end
   std::thread m_runner;
   FSEventStreamRef m_stream;
   dispatch_queue_t m_queue;
@@ -325,10 +332,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  AN::ThreadAccess threadAccess = {false};
+  AN::accessManager.shouldQuit.store(false);
 
   std::thread folderManagerThread([&]() {
-    AN::FoldersManager folderManager(threadAccess, paths);
+    AN::FoldersManager folderManager(paths);
     folderManager.run();
   });
 
@@ -370,7 +377,11 @@ int main(int argc, char *argv[]) {
     // printf("you said: %c\n\r", c);
     if (c == 'q') {
       printf("quitting\n\r");
-      threadAccess.shouldQuit = true;
+      // threadAccess.shouldQuit = true;
+      // threadAccess.shouldQuit.notify_all();
+      AN::accessManager.shouldQuit.store(true);
+      AN::cvSyncFSEventStreamToFolderManager.notify_all();
+      textLoopRunning = false;
     }
   }
   tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
