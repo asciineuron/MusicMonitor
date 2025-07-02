@@ -147,34 +147,36 @@ int main(int argc, char *argv[]) {
       folderManager.serverStart();
 
     } else {
+      // TODO use getopt to add client query commands eg 'list' 'add' etc
       logger.log("Connected as client.");
       AN::FoldersManagerClient client;
       std::string serverList = client.getServerListFiles();
       logger.log("received: " + serverList);
+      client.disconnect();
+      // // TODO!! refactor with above into generic terminal interface
+      // struct termios termOld, termNew;
+      // tcgetattr(STDIN_FILENO, &termOld);
+      // termNew = termOld;
+      // // turn off icanon from appropriate flag group, and other qol flags
+      // // disable sig to handle and quit manually
+      // termNew.c_lflag &= ~(ICANON | ECHO | ISIG);
 
-      // TODO!! refactor with above into generic terminal interface
-      struct termios termOld, termNew;
-      tcgetattr(STDIN_FILENO, &termOld);
-      termNew = termOld;
-      // turn off icanon from appropriate flag group, and other qol flags
-      // disable sig to handle and quit manually
-      termNew.c_lflag &= ~(ICANON | ECHO | ISIG);
+      // termNew.c_iflag &= INLCR; // OPOST;//ONLCR;//INLCR;
 
-      termNew.c_iflag &= INLCR; // OPOST;//ONLCR;//INLCR;
-
-      bool textLoopRunning = true;
-      tcsetattr(STDIN_FILENO, TCSANOW, &termNew); // set immediately
-      // main input handling loop
-      while (textLoopRunning) {
-        char c = getchar();
-        if (c == 'q' || c == '\x03') {
-          printf("quitting\n\r");
-          client.disconnect();
-          folderManager.stop();
-          textLoopRunning = false;
-        }
-      }
-      tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
+      // bool textLoopRunning = true;
+      // tcsetattr(STDIN_FILENO, TCSANOW, &termNew); // set immediately
+      // // main input handling loop
+      // while (textLoopRunning) {
+      //   char c = getchar();
+      //   if (c == 'q' || c == '\x03') {
+      //     printf("quitting\n\r");
+      //     // TODO disconnect client, add more here:
+      //     client.disconnect();
+      //     folderManager.stop();
+      //     textLoopRunning = false;
+      //   }
+      // }
+      // tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
     }
   }
 

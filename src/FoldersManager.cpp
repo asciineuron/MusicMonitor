@@ -3,6 +3,7 @@
 #include <CoreServices/CoreServices.h>
 #include <array>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -290,9 +291,10 @@ void FoldersManager::serverStart() {
 
   while (1) {
     // move to socket listening instead
-    // select on socketkillpair?
     socklen_t remoteLen = sizeof(remote);
     m_logger.log("Waiting for connections");
+
+    // wait until receive client:
     int clientId =
         accept(m_socketId, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
     // set socket to be nonblocking
@@ -346,10 +348,12 @@ void FoldersManager::serverStart() {
           }
         }
 
-        if (send(clientId, listFiles.c_str(), listFiles.size(), 0) < 0) {
-          m_logger.logErr("Failed at send");
-          exit(EXIT_FAILURE);
-        }
+        // if (send(clientId, listFiles.c_str(), listFiles.size(), 0) < 0) {
+        //   m_logger.logErr("Failed at send");
+        //   exit(EXIT_FAILURE);
+        // }
+        sendString(clientId, listFiles);
+
         close(clientId); // TODO add this? Not sure if we also want to terminate the connection here, but prob
         break;
       }
@@ -375,6 +379,41 @@ void FoldersManager::quitThread() {
     doScan = true;
     doScanCV.notify_all();
   }
+}
+
+void sendString(int fd, std::string_view msg) {
+  uint32_t strsize = msg.length();
+  if (send(fd, &strsize, sizeof(strsize), 0) == -1) {
+    std::cerr << "Failed to send() string size\n";
+  }
+  if (send(fd, msg.data(), msg.length(), 0) == -1) {
+    std::cerr << "Failed to send() string data\n";
+  }
+}
+
+std::string recvString(int fd) {
+  uint32_t strsize;
+  if (recv(fd, &strsize, sizeof(strsize), 0) != sizeof(strsize)) {
+    std::cerr << "Failed to recv() string size\n";
+  }
+  std::vector<char> buffer(strsize);
+  size_t charsReceived = 0;
+  // std::string buffer(strsize+1, '\0'); // extra final nullptr
+  int res;
+  while (charsReceived != buffer.size()) {
+    res = recv(fd, &buffer[charsReceived], strsize, 0);
+    if (res == strsize) {
+      break;
+    } else if (res == -1) {
+      std::cerr << "Failed to recv() string data\n";
+    } else {
+      // not all data yet received, keep going
+      // processed res bytes
+      charsReceived += res;
+    }
+  }
+  std::string out(buffer.begin(), buffer.end());
+  return out;
 }
 
 FoldersManagerClient::FoldersManagerClient() {
@@ -410,17 +449,19 @@ std::string FoldersManagerClient::getServerListFiles() {
     std::cerr << "send() error " << strerror(errno) << "\n";
   }
 
-  std::string out;
-  char recvData[100];
-  memset(recvData, 0, sizeof(recvData));
-  // need to read until some sort of end signal from the server... separate from
-  // other commands
-  while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
-    std::cout << recvData;
-    out = out + recvData;
-    memset(recvData, 0, sizeof(recvData)); // TODO unsure maybe need to clear
-    // std::cerr << "recv() error\n";
-  }
+  // std::string out;
+  // char recvData[100];
+  // memset(recvData, 0, sizeof(recvData));
+  // // need to read until some sort of end signal from the server... separate
+  // from
+  // // other commands
+  // while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
+  //   std::cout << recvData;
+  //   out = out + recvData;
+  //   memset(recvData, 0, sizeof(recvData)); // TODO unsure maybe need to clear
+  //   // std::cerr << "recv() error\n";
+  // }
+  std::string out = recvString(m_socketId);
   disconnect();
   return out;
 }

@@ -29,6 +29,11 @@ private:
 
 enum ServerCommands { ServerListFiles, ServerCommandsCount }; // implement in foldermanager server and separate client
 
+// sends formatted { uint32_t len, char *data } data to valid ready socket at fd
+void sendString(int fd, std::string_view str);
+// parses data from sendString into valid std::string
+std::string recvString(int fd);
+
 class FoldersManager {
 public:
   FoldersManager(std::vector<fs::path> folderNames);
