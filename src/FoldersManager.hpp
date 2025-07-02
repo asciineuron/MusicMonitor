@@ -1,4 +1,5 @@
 #pragma once
+#include "Log.hpp"
 #include <CoreServices/CoreServices.h>
 #include <filesystem>
 #include <thread>
@@ -33,10 +34,22 @@ public:
 
   void run();
   void stop();
-  int serverStart();
+  void serverStart();
+  void serverStop();
 
 private:
+  Log::Logger m_logger;
+
+  // for server use, not needed for client
   int m_socketId;
+  // to start/stop network thread
+  int m_socketKillPair[2];
+  // filename in current dir for socket
+  std::string m_socketAddrSuffix{"mysocket"};
+  // network thread to listen for and handle connections
+  std::thread m_socketThread;
+
+  std::string m_logAddrPrefix{"mylog"}; // append to current working directory
   std::atomic_bool isRunning;
   std::thread m_runner;
   FSEventStreamRef m_stream;

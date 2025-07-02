@@ -34,6 +34,7 @@ public:
 
   void log(std::string message, bool disable = false);
   void logErr(std::string message, bool disable = false);
+  void changeFd(int fd);
 
 private:
   int m_fd;

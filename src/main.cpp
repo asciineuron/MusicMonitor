@@ -137,12 +137,7 @@ int main(int argc, char *argv[]) {
     // TODO set up server and detach
     // start listening on a socket for commands
     if (runAsServer) {
-      if (folderManager.serverStart() == -1) {
-        logger.logErr("Failed to start server");
-        exit(EXIT_FAILURE);
-      } else {
-        // set up client, basically just to receive info messages from server
-      }
+      folderManager.serverStart();
     }
 
   }

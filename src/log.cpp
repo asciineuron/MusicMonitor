@@ -1,6 +1,7 @@
 #include "Log.hpp"
 #include <cstdlib>
 #include <fcntl.h>
+#include <string>
 #include <unistd.h>
 #include <vector>
 
@@ -26,14 +27,18 @@ void printFmt(const std::string_view str, std::vector<AnsiAttributes> styles) {
 }
 
 Logger::Logger(int fd) {
+  changeFd(fd);
+}
+
+void Logger::changeFd(int fd) {
+  log("Changing output to new fd: " + std::to_string(fd) + ", see you there, bye!");
   if (fcntl(fd, F_GETFL) == -1) {
-    std::cerr << "file descriptor: " << fd << " is not open.\n";
+    log("file descriptor: " + std::to_string(fd) + " is not open.\n");
     exit(EXIT_FAILURE);
   }
   m_fd = fd;
   m_isatty = isatty(m_fd);
 }
-
 
 void Logger::log(std::string message, bool disable) {
   if (disable)

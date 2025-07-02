@@ -8,6 +8,8 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -147,7 +149,7 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
 }
 
 FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
-    : m_trackedFolders(folderNames) {
+    : m_logger(STDOUT_FILENO), m_trackedFolders(folderNames) {
   // set up folderscanner handlers:
   for (const auto &folderName : folderNames) {
     m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
@@ -241,15 +243,50 @@ void FoldersManager::stop() {
   m_runner.join();
 }
 
-int FoldersManager::serverStart() {
+void FoldersManager::serverStart() {
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
-  return EXIT_SUCCESS;
+  m_socketId = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (m_socketId == 1) {
+    m_logger.logErr("Unable to open socket.");
+    exit(EXIT_FAILURE);
+  }
+
+  fs::path currentPath = fs::current_path();
+  currentPath /= m_socketAddrSuffix; // append filename to local directory
+
+  struct sockaddr_un remote, local;
+  // remote filled by accept()
+  local.sun_family = AF_UNIX;
+  strcpy(local.sun_path, currentPath.c_str());
+  // remove reference to file. if open nowhere else, delete it (so reset socket
+  // file when starting server)
+  unlink(local.sun_path);
+
+  // bind socket num to file address
+  if (bind(m_socketId, (struct sockaddr *)&local,
+           (sizeof(local.sun_family) + strlen(currentPath.c_str()))) == -1) {
+    m_logger.logErr("Unable to bind socket to address: " +
+                    currentPath.string());
+    exit(EXIT_FAILURE);
+  }
+
+  if (listen(m_socketId, 3) == -1) {
+    m_logger.logErr("Unable to set listen.");
+    exit(EXIT_FAILURE);
+  }
+  while (1) {
+    // move to socket listening instead
+  }
+  socklen_t remoteLen = sizeof(remote);
+  int clientId = accept(m_socketId, reinterpret_cast<sockaddr*>(&remote), &remoteLen);
 }
 
-void FoldersManager::handleSignal() {
-
+void FoldersManager::serverStop() {
+  // open socketpair and send message to network thread
 }
+
+void FoldersManager::handleSignal() {}
 
 void FoldersManager::quitThread() {
   // send stop to worker thread
