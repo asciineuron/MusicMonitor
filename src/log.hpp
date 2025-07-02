@@ -10,25 +10,35 @@
 
 namespace AN {
 namespace Log {
-// constexpr std::string AnsiEscape = "\x1b";
+
 enum AnsiAttributes {
-  Plain,
-  No,
-  Bright,
-  Dim,
-  Italic,
-  Underline,
-  Reverse,
-  With,
+  AnsiPlain,
+  AnsiNo,
+  AnsiBright,
+  AnsiDim,
+  AnsiItalic,
+  AnsiUnderline,
+  AnsiReverse,
+  AnsiWith,
   AnsiEsc,
   AnsiAttributesSize
 };
-constexpr std::array<std::string, AnsiAttributesSize> AnsiCodes = {
-    "0", "2", "1", "2", "3", "4", "7", ";", "\x1b"};
-
-// std::string applyStyle(std::span<const AnsiAttributes> styles); // private anyways
 
 void printFmt(const std::string_view str, std::vector<AnsiAttributes> styles);
+
+
+class Logger {
+public:
+  // requires fd be an opened file managed elsewhere, this just formats to output
+  Logger(int fd);
+
+  void log(std::string message, bool disable = false);
+  void logErr(std::string message, bool disable = false);
+
+private:
+  int m_fd;
+  bool m_isatty;
+};
 
 } // namespace Log
 } // namespace AN
