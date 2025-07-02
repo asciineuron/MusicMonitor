@@ -1,13 +1,19 @@
 #include "FoldersManager.hpp"
+
 #include <CoreServices/CoreServices.h>
+#include <array>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
+#include <poll.h>
 #include <span>
 #include <string>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
@@ -16,6 +22,13 @@
 
 namespace AN {
 namespace fs = std::filesystem;
+
+// filename in current directory for socket communication
+// constexpr std::string SocketAddrSuffix{"mysocket"};
+
+// const std::string SocketAddr{"/home/aleshapp/mysocket"};
+// might not have write access outside parent folder due to apple...
+const std::string SocketAddr{"/Users/alex/Ext/Code/MusicMonitor/build/mysocket"};
 
 std::condition_variable doScanCV;
 std::mutex doScanMutex;
@@ -252,22 +265,20 @@ void FoldersManager::serverStart() {
     exit(EXIT_FAILURE);
   }
 
-  fs::path currentPath = fs::current_path();
-  currentPath /= m_socketAddrSuffix; // append filename to local directory
-
   struct sockaddr_un remote, local;
   // remote filled by accept()
   local.sun_family = AF_UNIX;
-  strcpy(local.sun_path, currentPath.c_str());
+  // point us to the socket address
+  strcpy(local.sun_path, SocketAddr.c_str());
   // remove reference to file. if open nowhere else, delete it (so reset socket
   // file when starting server)
   unlink(local.sun_path);
 
   // bind socket num to file address
   if (bind(m_socketId, (struct sockaddr *)&local,
-           (sizeof(local.sun_family) + strlen(currentPath.c_str()))) == -1) {
+           (sizeof(local.sun_family) + strlen(SocketAddr.c_str()))) == -1) {
     m_logger.logErr("Unable to bind socket to address: " +
-                    currentPath.string());
+                    SocketAddr);
     exit(EXIT_FAILURE);
   }
 
@@ -275,18 +286,79 @@ void FoldersManager::serverStart() {
     m_logger.logErr("Unable to set listen.");
     exit(EXIT_FAILURE);
   }
+
   while (1) {
     // move to socket listening instead
+    // select on socketkillpair?
+    socklen_t remoteLen = sizeof(remote);
+    int clientId =
+        accept(m_socketId, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
+    // set socket to be nonblocking
+    if (fcntl(clientId, F_SETFL, fcntl(clientId, F_GETFL, 0) | O_NONBLOCK) ==
+        -1) {
+      m_logger.logErr("Unable to set socket to nonblocking");
+      exit(EXIT_FAILURE);
+    }
+
+    // now do poll loop waiting for message from pair
+    std::array<struct pollfd, 2> pollFds;
+    pollFds[1].fd = clientId;
+    // handle closed connection POLLHUP to
+    // not quit but release client
+    pollFds[1].events = POLLIN | POLLHUP;
+    // listen for kill from socketpair from main
+    pollFds[0].fd = m_socketKillPair[1];
+    pollFds[0].events = POLLIN;
+
+    m_logger.log("Polling on connections");
+    poll(pollFds.data(), 2, -1);
+
+    if (pollFds[0].revents & POLLIN) {
+      // received data from kill channel, quit server loop
+      m_logger.log("Received socketpair quit signal");
+      break;
+    } else if (pollFds[1].revents & POLLIN) {
+      // TODO split out main thread processing logic here, esp at switch
+      m_logger.log("Client message ready to read");
+      ServerCommands command; // prepare for reading from socket
+
+      int num = recv(clientId, &command, sizeof(command), 0);
+      if (num < 0) {
+        m_logger.logErr("Failed at recv");
+        exit(EXIT_FAILURE);
+      }
+      if (num == 0) {
+        m_logger.log("Maybe err: received EOF from recv");
+      }
+
+      m_logger.log("Received value: " + std::to_string(command));
+      switch (command) {
+      case ServerListFiles: {
+        // return a string of all new files
+        std::string listFiles;
+        for (auto &scanner : m_trackedFoldersScanners) {
+          std::vector<fs::path> newfiles = scanner.getNewFiles();
+          for (auto &file : newfiles) {
+            listFiles = listFiles + "," + file.string();
+          }
+        }
+
+        if (send(clientId, listFiles.c_str(), listFiles.size(), 0) < 0) {
+          m_logger.logErr("Failed at send");
+          exit(EXIT_FAILURE);
+        }
+      }
+      default:
+      }
+    }
   }
-  socklen_t remoteLen = sizeof(remote);
-  int clientId = accept(m_socketId, reinterpret_cast<sockaddr*>(&remote), &remoteLen);
 }
 
 void FoldersManager::serverStop() {
   // open socketpair and send message to network thread
 }
 
-void FoldersManager::handleSignal() {}
+// void FoldersManager::handleSignal() {}
 
 void FoldersManager::quitThread() {
   // send stop to worker thread
@@ -297,6 +369,33 @@ void FoldersManager::quitThread() {
     doScan = true;
     doScanCV.notify_all();
   }
+}
+
+FoldersManagerClient::FoldersManagerClient() {
+  if ((m_socketId = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+    std::cerr << "client socket() call error\n";
+  }
+  std::cout << "connected\n";
+}
+
+std::string FoldersManagerClient::getServerListFiles() {
+  ServerCommands value = ServerCommands::ServerListFiles;
+  if (send(m_socketId, &value,
+           sizeof(value), 0) == -1) {
+    std::cerr << "send() error\n";
+  }
+
+  std::string out;
+  char recvData[100];
+  // need to read until some sort of end signal from the server... separate from other commands
+  while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
+    std::cout << recvData;
+    out = out + recvData;
+    memset(recvData, 0, sizeof(recvData)); // TODO unsure maybe need to clear
+    // std::cerr << "recv() error\n";
+  }
+
+  return out;
 }
 
 }; // namespace AN

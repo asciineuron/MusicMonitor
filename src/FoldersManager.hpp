@@ -26,6 +26,7 @@ private:
   bool isValidExtension(const fs::directory_entry &entry);
 };
 
+enum ServerCommands { ServerListFiles, ServerCommandsCount }; // implement in foldermanager server and separate client
 
 class FoldersManager {
 public:
@@ -38,6 +39,7 @@ public:
   void serverStop();
 
 private:
+  // need to handle e.g. ctrl z signal to know to put it in background and write to log instead
   Log::Logger m_logger;
 
   // for server use, not needed for client
@@ -45,9 +47,9 @@ private:
   // to start/stop network thread
   int m_socketKillPair[2];
   // filename in current dir for socket
-  std::string m_socketAddrSuffix{"mysocket"};
   // network thread to listen for and handle connections
-  std::thread m_socketThread;
+  // std::thread m_socketThread;
+  // fs::path m_socketAddrPrefix{}; // TODO improve this
 
   std::string m_logAddrPrefix{"mylog"}; // append to current working directory
   std::atomic_bool isRunning;
@@ -62,7 +64,17 @@ private:
   std::string m_logFile; // where to load/save latest event id etc
 
   void quitThread();
-  void handleSignal(); // thread will be waiting for read(), handle and process it here
+  // void handleSignal(); // thread will be waiting for read(), handle and process it here
+};
+
+class FoldersManagerClient {
+public:
+  FoldersManagerClient();
+
+  std::string getServerListFiles();
+
+private:
+  int m_socketId;
 };
 
 } // namespace AN

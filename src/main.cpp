@@ -24,6 +24,7 @@
 #include <thread>
 #include <unistd.h> //STDIN_FILENO
 #include <unordered_map>
+#include <getopt.h>
 
 namespace fs = std::filesystem;
 // namespace ranges = std::ranges;
@@ -49,6 +50,7 @@ void exit_cleanup(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+  printArgs(argc, argv);
   // AN::Log::printFmt("Hello world!", {AN::Log::AnsiUnderline});
   AN::Log::Logger logger(STDOUT_FILENO);
   logger.log("Hello world!");
@@ -71,10 +73,11 @@ int main(int argc, char *argv[]) {
   // if not at tty, run as server or client
   bool runAsServer = false; // if not at tty, am I the server or client?
 
-  char c;
+  int c;
   // important: '+' enables POSIXLY to stop parsing at non option rather than
   // error
-  while ((c = getopt(argc, argv, "p:") != -1)) {
+  opterr = 0;
+  while ((c = getopt(argc, argv, "cp")) != -1) {
     switch (c) {
     case 'p':
       std::cout << "trying to connect to server...\n";
@@ -85,7 +88,10 @@ int main(int argc, char *argv[]) {
       runOnTty = false;
       runAsServer = true;
       break;
+    case '?':
+      logger.logErr("Unknown option" + std::string(1,c));
     default:
+      printf("got %c\n", c);
       break;
     }
   }
@@ -95,6 +101,7 @@ int main(int argc, char *argv[]) {
   std::vector<fs::path> paths;
   size_t path_idx = 0;
   for (int i = optind; i < argc; ++i) {
+    logger.log("Tracking " + std::string(argv[i]));
     paths.emplace_back(fs::path(argv[i]));
     std::error_code ec;
     if (!fs::is_directory(paths[path_idx], ec)) {
@@ -138,6 +145,10 @@ int main(int argc, char *argv[]) {
     // start listening on a socket for commands
     if (runAsServer) {
       folderManager.serverStart();
+
+      AN::FoldersManagerClient client{};
+      std::string serverList = client.getServerListFiles();
+      logger.log("received: " + serverList);
     }
 
   }

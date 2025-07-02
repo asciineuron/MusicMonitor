@@ -1,4 +1,5 @@
 #include "Log.hpp"
+
 #include <cstdlib>
 #include <fcntl.h>
 #include <string>
