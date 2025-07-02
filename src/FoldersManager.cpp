@@ -28,7 +28,8 @@ namespace fs = std::filesystem;
 
 // const std::string SocketAddr{"/home/aleshapp/mysocket"};
 // might not have write access outside parent folder due to apple...
-const std::string SocketAddr{"/Users/alex/Ext/Code/MusicMonitor/build/mysocket"};
+const std::string SocketAddr{
+    "/Users/alex/Ext/Code/MusicMonitor/build/mysocket"};
 
 std::condition_variable doScanCV;
 std::mutex doScanMutex;
@@ -265,6 +266,7 @@ void FoldersManager::serverStart() {
     exit(EXIT_FAILURE);
   }
 
+  // remote filled later by accept(), local filled when creating socket
   struct sockaddr_un remote, local;
   // remote filled by accept()
   local.sun_family = AF_UNIX;
@@ -277,8 +279,7 @@ void FoldersManager::serverStart() {
   // bind socket num to file address
   if (bind(m_socketId, (struct sockaddr *)&local,
            (sizeof(local.sun_family) + strlen(SocketAddr.c_str()))) == -1) {
-    m_logger.logErr("Unable to bind socket to address: " +
-                    SocketAddr);
+    m_logger.logErr("Unable to bind socket to address: " + SocketAddr);
     exit(EXIT_FAILURE);
   }
 
@@ -291,6 +292,7 @@ void FoldersManager::serverStart() {
     // move to socket listening instead
     // select on socketkillpair?
     socklen_t remoteLen = sizeof(remote);
+    m_logger.log("Waiting for connections");
     int clientId =
         accept(m_socketId, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
     // set socket to be nonblocking
@@ -299,6 +301,7 @@ void FoldersManager::serverStart() {
       m_logger.logErr("Unable to set socket to nonblocking");
       exit(EXIT_FAILURE);
     }
+    m_logger.log("Received connection" + std::to_string(clientId));
 
     // now do poll loop waiting for message from pair
     std::array<struct pollfd, 2> pollFds;
@@ -374,22 +377,34 @@ void FoldersManager::quitThread() {
 }
 
 FoldersManagerClient::FoldersManagerClient() {
+  struct sockaddr_un remote;
+  remote.sun_family = AF_UNIX;
+  strcpy(remote.sun_path, SocketAddr.c_str());
+
   if ((m_socketId = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
     std::cerr << "client socket() call error\n";
+    exit(EXIT_FAILURE);
   }
+
+  if (connect(m_socketId, reinterpret_cast<sockaddr *>(&remote),
+              (sizeof(remote.sun_family) + strlen(remote.sun_path))) == -1) {
+    std::cerr << "client connect() call error\n";
+    exit(EXIT_FAILURE);
+  }
+
   std::cout << "connected\n";
 }
 
 std::string FoldersManagerClient::getServerListFiles() {
   ServerCommands value = ServerCommands::ServerListFiles;
-  if (send(m_socketId, &value,
-           sizeof(value), 0) == -1) {
-    std::cerr << "send() error\n";
+  if (send(m_socketId, &value, sizeof(value), 0) == -1) {
+    std::cerr << "send() error " << strerror(errno) << "\n";
   }
 
   std::string out;
   char recvData[100];
-  // need to read until some sort of end signal from the server... separate from other commands
+  // need to read until some sort of end signal from the server... separate from
+  // other commands
   while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
     std::cout << recvData;
     out = out + recvData;

@@ -146,7 +146,10 @@ int main(int argc, char *argv[]) {
     if (runAsServer) {
       folderManager.serverStart();
 
-      AN::FoldersManagerClient client{};
+
+    } else {
+      logger.log("Connected as client.");
+      AN::FoldersManagerClient client;
       std::string serverList = client.getServerListFiles();
       logger.log("received: " + serverList);
     }
