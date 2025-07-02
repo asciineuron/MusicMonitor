@@ -350,6 +350,7 @@ void FoldersManager::serverStart() {
           m_logger.logErr("Failed at send");
           exit(EXIT_FAILURE);
         }
+        close(clientId); // TODO add this? Not sure if we also want to terminate the connection here, but prob
         break;
       }
       default:
@@ -377,17 +378,24 @@ void FoldersManager::quitThread() {
 }
 
 FoldersManagerClient::FoldersManagerClient() {
-  struct sockaddr_un remote;
   remote.sun_family = AF_UNIX;
   strcpy(remote.sun_path, SocketAddr.c_str());
+  m_remoteSize = sizeof(remote.sun_family) + strlen(remote.sun_path);
+  // connect();
+}
+
+void FoldersManagerClient::connect() {
+  // main gateway to each function, re-establish connection. Makes streaming
+  // sockets easy to read to completion vs separating several commands+output
 
   if ((m_socketId = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
     std::cerr << "client socket() call error\n";
     exit(EXIT_FAILURE);
   }
 
-  if (connect(m_socketId, reinterpret_cast<sockaddr *>(&remote),
-              (sizeof(remote.sun_family) + strlen(remote.sun_path))) == -1) {
+  // need global scope resolver for connect()
+  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&remote),
+                m_remoteSize) == -1) {
     std::cerr << "client connect() call error\n";
     exit(EXIT_FAILURE);
   }
@@ -396,6 +404,7 @@ FoldersManagerClient::FoldersManagerClient() {
 }
 
 std::string FoldersManagerClient::getServerListFiles() {
+  connect();
   ServerCommands value = ServerCommands::ServerListFiles;
   if (send(m_socketId, &value, sizeof(value), 0) == -1) {
     std::cerr << "send() error " << strerror(errno) << "\n";
@@ -403,6 +412,7 @@ std::string FoldersManagerClient::getServerListFiles() {
 
   std::string out;
   char recvData[100];
+  memset(recvData, 0, sizeof(recvData));
   // need to read until some sort of end signal from the server... separate from
   // other commands
   while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
@@ -411,8 +421,14 @@ std::string FoldersManagerClient::getServerListFiles() {
     memset(recvData, 0, sizeof(recvData)); // TODO unsure maybe need to clear
     // std::cerr << "recv() error\n";
   }
-
+  disconnect();
   return out;
+}
+
+void FoldersManagerClient::disconnect() {
+  // don't stop server, but tell it we are done and closing our connection so it
+  // waits for someone new
+  close(m_socketId); // TODO add error or status check
 }
 
 }; // namespace AN

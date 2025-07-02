@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ftw.h>
+#include <getopt.h>
 #include <iostream>
 #include <mutex>
 #include <poll.h>
@@ -24,7 +25,6 @@
 #include <thread>
 #include <unistd.h> //STDIN_FILENO
 #include <unordered_map>
-#include <getopt.h>
 
 namespace fs = std::filesystem;
 // namespace ranges = std::ranges;
@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
       runAsServer = true;
       break;
     case '?':
-      logger.logErr("Unknown option" + std::string(1,c));
+      logger.logErr("Unknown option" + std::string(1, c));
     default:
       printf("got %c\n", c);
       break;
@@ -146,14 +146,36 @@ int main(int argc, char *argv[]) {
     if (runAsServer) {
       folderManager.serverStart();
 
-
     } else {
       logger.log("Connected as client.");
       AN::FoldersManagerClient client;
       std::string serverList = client.getServerListFiles();
       logger.log("received: " + serverList);
-    }
 
+      // TODO!! refactor with above into generic terminal interface
+      struct termios termOld, termNew;
+      tcgetattr(STDIN_FILENO, &termOld);
+      termNew = termOld;
+      // turn off icanon from appropriate flag group, and other qol flags
+      // disable sig to handle and quit manually
+      termNew.c_lflag &= ~(ICANON | ECHO | ISIG);
+
+      termNew.c_iflag &= INLCR; // OPOST;//ONLCR;//INLCR;
+
+      bool textLoopRunning = true;
+      tcsetattr(STDIN_FILENO, TCSANOW, &termNew); // set immediately
+      // main input handling loop
+      while (textLoopRunning) {
+        char c = getchar();
+        if (c == 'q' || c == '\x03') {
+          printf("quitting\n\r");
+          client.disconnect();
+          folderManager.stop();
+          textLoopRunning = false;
+        }
+      }
+      tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
+    }
   }
 
   return 0;

@@ -3,6 +3,7 @@
 #include <CoreServices/CoreServices.h>
 #include <filesystem>
 #include <thread>
+#include <sys/un.h>
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
@@ -73,8 +74,14 @@ public:
 
   std::string getServerListFiles();
 
+  void connect();
+
+  void disconnect();
+
 private:
-  int m_socketId;
+  struct sockaddr_un remote{};
+  int m_socketId{};
+  int m_remoteSize{};
 };
 
 } // namespace AN
