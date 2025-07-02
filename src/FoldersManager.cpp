@@ -347,8 +347,10 @@ void FoldersManager::serverStart() {
           m_logger.logErr("Failed at send");
           exit(EXIT_FAILURE);
         }
+        break;
       }
       default:
+        continue;
       }
     }
   }

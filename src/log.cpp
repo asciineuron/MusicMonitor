@@ -27,12 +27,14 @@ void printFmt(const std::string_view str, std::vector<AnsiAttributes> styles) {
   std::cout << applyStyle(styles) << "\n";
 }
 
-Logger::Logger(int fd) {
+Logger::Logger(int fd)
+    :m_fd(fd) {
   changeFd(fd);
 }
 
 void Logger::changeFd(int fd) {
-  log("Changing output to new fd: " + std::to_string(fd) + ", see you there, bye!");
+  if (fd != m_fd)
+    log("Changing output to new fd: " + std::to_string(fd) + ", see you there, bye!");
   if (fcntl(fd, F_GETFL) == -1) {
     log("file descriptor: " + std::to_string(fd) + " is not open.\n");
     exit(EXIT_FAILURE);
