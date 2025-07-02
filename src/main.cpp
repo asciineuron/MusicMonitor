@@ -1,5 +1,5 @@
-#include "Log.hpp"
 #include "FoldersManager.hpp"
+#include "Log.hpp"
 #include <CoreServices/CoreServices.h>
 #include <algorithm>
 #include <chrono>
@@ -25,7 +25,7 @@
 #include <unistd.h> //STDIN_FILENO
 #include <unordered_map>
 
-// namespace fs = std::filesystem;
+namespace fs = std::filesystem;
 // namespace ranges = std::ranges;
 
 // some simple data to share from calling main and the run thread
@@ -66,8 +66,8 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  bool runOnTty =
-      true; // direct user interaction, no sockets, else client to server
+  // direct user interaction, no sockets, else client to server
+  bool runOnTty = true;
   // if not at tty, run as server or client
   bool runAsServer = false; // if not at tty, am I the server or client?
 
@@ -116,7 +116,8 @@ int main(int argc, char *argv[]) {
     tcgetattr(STDIN_FILENO, &termOld);
     termNew = termOld;
     // turn off icanon from appropriate flag group, and other qol flags
-    termNew.c_lflag &= ~(ICANON | ECHO);
+    // disable sig to handle and quit manually
+    termNew.c_lflag &= ~(ICANON | ECHO | ISIG);
 
     termNew.c_iflag &= INLCR; // OPOST;//ONLCR;//INLCR;
 
@@ -125,7 +126,7 @@ int main(int argc, char *argv[]) {
     // main input handling loop
     while (textLoopRunning) {
       char c = getchar();
-      if (c == 'q') {
+      if (c == 'q' || c == '\x03') {
         printf("quitting\n\r");
         folderManager.stop();
         textLoopRunning = false;
@@ -135,10 +136,15 @@ int main(int argc, char *argv[]) {
   } else {
     // TODO set up server and detach
     // start listening on a socket for commands
-    if (folderManager.serverStart() == -1) {
-      logger.logErr("Failed to start server");
-      exit(EXIT_FAILURE);
+    if (runAsServer) {
+      if (folderManager.serverStart() == -1) {
+        logger.logErr("Failed to start server");
+        exit(EXIT_FAILURE);
+      } else {
+        // set up client, basically just to receive info messages from server
+      }
     }
+
   }
 
   return 0;

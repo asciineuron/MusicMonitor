@@ -33,7 +33,7 @@ public:
 
   void run();
   void stop();
-  void serverStart();
+  int serverStart();
 
 private:
   int m_socketId;

@@ -1,6 +1,7 @@
 #include "FoldersManager.hpp"
 #include <CoreServices/CoreServices.h>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -240,9 +241,10 @@ void FoldersManager::stop() {
   m_runner.join();
 }
 
-void FoldersManager::serverStart() {
+int FoldersManager::serverStart() {
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
+  return EXIT_SUCCESS;
 }
 
 void FoldersManager::handleSignal() {
