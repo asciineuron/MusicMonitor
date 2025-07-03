@@ -132,6 +132,14 @@ void FolderScanner::restoreContents() {
   // not yet tracking here, start fresh
   if (!!m_backupManager->isMonitoredRoot(m_directoryRoot))
     return;
+
+  auto loadedTimes = m_backupManager->getRootMonitoredFiles(m_directoryRoot);
+  m_files.insert_range(
+      loadedTimes |
+      std::views::transform([](auto pathTime) {
+        return std::tuple(pathTime.first,
+                          std::tuple(FileUpdateType::Old, pathTime.second));
+      }));
 }
 
 int FolderScanner::scanDir(const fs::path subdir) {
