@@ -171,8 +171,8 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
 }
 
 void FoldersManager::quitEventStream() {
-  if (first) {
-    first = false;
+  if (!m_stream) {
+    // has not yet been set up
     return;
   }
 
@@ -238,31 +238,20 @@ void FoldersManager::createEventStream() {
 }
 
 FoldersManager::FoldersManager() : m_logger(STDOUT_FILENO) {
-  m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_CONCURRENT);
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, m_socketKillPair) == -1) {
-    m_logger.logErr("socketpair() error");
-    exit(EXIT_FAILURE);
-  }
+  m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_SERIAL);
 }
 
 FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
     : FoldersManager() {
-  // m_trackedFolders.insert_range(folderNames);
-  // // TODO get folderNames from user input or config
-  // // TODO need to separate so can add new folders later...
-  // // Looks like we'll need to set up new event stream object...
-
-  // // set up folderscanner handlers:
-  // for (const auto &folderName : folderNames) {
-  //   m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
-  // }
-
   addFolders(folderNames);
   // set up fseventstream monitors:
   createEventStream();
 }
 
 FoldersManager::~FoldersManager() {
+  if (isRunning.load()) {
+    stop();
+  }
   quitEventStream();
   dispatch_release(m_queue);
 }
@@ -309,6 +298,7 @@ void FoldersManager::stop() {
 }
 
 void FoldersManager::serverStart() {
+  m_serverRunning = true;
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
   m_socketId = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -342,7 +332,7 @@ void FoldersManager::serverStart() {
     exit(EXIT_FAILURE);
   }
 
-  while (1) {
+  while (m_serverRunning) {
     // move to socket listening instead
     socklen_t remoteLen = sizeof(remote);
     m_logger.log("Waiting for connections");
@@ -359,24 +349,15 @@ void FoldersManager::serverStart() {
     m_logger.log("Received connection" + std::to_string(m_clientId));
 
     // now do poll loop waiting for message from pair
-    std::array<struct pollfd, 2> pollFds;
-    pollFds[1].fd = m_clientId;
-    // handle closed connection POLLHUP to
-    // not quit but release client
-    pollFds[1].events = POLLIN | POLLHUP;
-    // listen for kill from socketpair from main
-    pollFds[0].fd = m_socketKillPair[1];
-    pollFds[0].events = POLLIN;
+    std::array<struct pollfd, 1> pollFds;
+    pollFds[0].fd = m_clientId;
+    pollFds[0].events = POLLIN | POLLHUP;
+    ;
 
     m_logger.log("Polling on connections");
     poll(pollFds.data(), 2, -1);
 
     if (pollFds[0].revents & POLLIN) {
-      // received data from kill channel, quit server loop
-      m_logger.log("Received socketpair quit signal");
-      break;
-
-    } else if (pollFds[1].revents & POLLIN) {
       // TODO split out main thread processing logic here, esp at switch
       m_logger.log("Client message ready to read");
       ServerCommands command; // prepare for reading from socket
@@ -399,17 +380,10 @@ void FoldersManager::serverStart() {
 }
 
 void FoldersManager::serverStop() {
-  // open socketpair and send message to network thread, call when receive
-  // quit command from client
-  // uint32_t msg = 0xFFFFFFFF; // just send something to trigger ready
-  // if (send(m_socketKillPair[0], &msg, sizeof(msg), 0) == -1) {
-  //   std::cerr << "Failed to send quit message to server\n";
-  //   exit(EXIT_FAILURE);
-  // }
   // TODO note we are just looping so just tidy up then exit
   close(m_clientId);
+  m_serverRunning = false;
   m_logger.log("Quitting from client request");
-  exit(EXIT_SUCCESS);
 }
 
 std::vector<fs::path> FoldersManager::getNewFiles() {

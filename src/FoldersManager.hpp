@@ -62,10 +62,9 @@ private:
   // for server use, not needed for client
   int m_socketId;
   int m_clientId;
-  struct sockaddr_un local; // TODO refactor all this to server class
   // to start/stop network thread
   // TODO still keep for graceful local kill maybe, otherwise just exit(success) from quit message...
-  int m_socketKillPair[2];
+  bool m_serverRunning; // maybe instead of kill pair, not needed
   // filename in current dir for socket
   // network thread to listen for and handle connections
   // std::thread m_socketThread;
@@ -74,8 +73,8 @@ private:
   std::string m_logAddrPrefix{"mylog"}; // append to current working directory
   std::atomic_bool isRunning;
   std::thread m_runner;
-  FSEventStreamRef m_stream;
-  dispatch_queue_t m_queue;
+  FSEventStreamRef m_stream{nullptr};
+  dispatch_queue_t m_queue{nullptr};
   // std::vector<fs::path> m_trackedFolders;
   std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
   // std::unordered_set<fs::path> m_trackedFolders;
@@ -84,7 +83,6 @@ private:
   fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
   FSEventStreamEventId m_latestEventId;
   std::string m_logFile; // where to load/save latest event id etc
-  bool first{true}; // TODO better, to not quit the first time when no event stream
 
   void quitThread();
   // thread will be waiting for read(), handle and process it here depending on
