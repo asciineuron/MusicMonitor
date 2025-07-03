@@ -11,4 +11,7 @@ add_subdirectory(src)
 
 # must come after adding the executable above:
 
-target_link_libraries(MusicMonitor "-framework CoreServices")
+target_link_libraries(MusicMonitor PUBLIC "-framework CoreServices")
+
+find_package(nlohmann_json 3.12.0 REQUIRED)
+target_link_libraries(MusicMonitor PRIVATE nlohmann_json::nlohmann_json)

@@ -1,27 +1,20 @@
 #include "FoldersManager.hpp"
 
-#include <CoreServices/CoreServices.h>
 #include <algorithm>
 #include <array>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <iterator>
 #include <mutex>
 #include <numeric>
 #include <poll.h>
 #include <ranges>
-#include <set>
-#include <span>
 #include <string>
 #include <sys/poll.h>
 #include <sys/socket.h>
-#include <sys/un.h>
-#include <thread>
 #include <tuple>
 #include <unistd.h>
 #include <vector>
@@ -39,8 +32,8 @@ bool doScan;
 
 void fileListExecutor(const fs::path &command,
                       std::span<const fs::path> filenames, bool doParallel) {
-// void fileListExecutor(const fs::path &command,
-//                       std::set<fs::path> filenames, bool doParallel) {
+  // void fileListExecutor(const fs::path &command,
+  //                       std::set<fs::path> filenames, bool doParallel) {
   const int commandLen = strlen(command.c_str());
 
   // do basic fork exec for the command on each filename
@@ -95,7 +88,8 @@ void fileListExecutor(const fs::path &command,
     for (int i = 1; i < argc; ++i) {
       argv[i] = static_cast<char *>(
           malloc(sizeof(char) * (strlen(filenames[i - 1].c_str()) + 1)));
-      strncpy(argv[i], filenames[i - 1].c_str(), strlen(filenames[i - 1].c_str()) + 1);
+      strncpy(argv[i], filenames[i - 1].c_str(),
+              strlen(filenames[i - 1].c_str()) + 1);
     }
     argv[argc] = nullptr;
     // printArgs(argc, argv);
@@ -114,32 +108,61 @@ void fileListExecutor(const fs::path &command,
 }
 
 FolderScanner::FolderScanner(fs::path directory) : m_directoryRoot(directory) {
+  restoreContents();
   if (scan() == -1) {
     std::cerr << "Scan failed\n";
     exit(EXIT_FAILURE);
   }
 }
 
-int FolderScanner::scan() {
+bool isParentDir(const fs::path checkParent, const fs::path child) {
+  fs::path parent;
+  while ((parent = child.parent_path()) != child) {
+    // == child when at root, so incorrect if checkParent is root but root
+    // parent unlikely
+    if (checkParent == parent)
+      return true;
+  }
+  return false;
+}
+
+void FolderScanner::restoreContents() {
+  if (!m_backupManager)
+    return;
+  // not yet tracking here, start fresh
+  if (!!m_backupManager->isMonitoredRoot(m_directoryRoot))
+    return;
+}
+
+int FolderScanner::scanDir(const fs::path subdir) {
   for (const fs::directory_entry &entry :
-       fs::recursive_directory_iterator(m_directoryRoot)) {
+       fs::recursive_directory_iterator(subdir)) {
     if (!isValidExtension(entry))
       continue;
 
     FileUpdateType type;
-    fs::file_time_type entryTime = entry.last_write_time();
+    time_t entryPosixTime = fsToPosixTime(entry.last_write_time());
     bool wasTracked = m_files.contains(entry.path());
-    std::pair<FileUpdateType, fs::file_time_type> &updateFile =
-        m_files[entry.path()]; // get or insert in either case...
+
+    auto &updateFile = m_files[entry.path()]; // get or insert in either case...
     if (wasTracked) {
-      type = entryTime > updateFile.second ? Updated : Old;
+      type = entryPosixTime > updateFile.second ? Updated : Old;
     } else {
       type = New;
     }
     updateFile.first = type;
-    updateFile.second = entryTime;
+    updateFile.second = entryPosixTime;
   }
   return 1;
+}
+
+int FolderScanner::scan() { return scanDir(m_directoryRoot); }
+
+int FolderScanner::scan(const fs::path subdir) {
+  if (!isParentDir(m_directoryRoot, subdir)) {
+    return -1;
+  }
+  return scanDir(subdir);
 }
 
 bool FolderScanner::isValidExtension(const fs::directory_entry &entry) {
@@ -344,7 +367,8 @@ void FoldersManager::serverStart() {
     m_clientSock =
         accept(m_serverSock, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
     if (m_clientSock == -1) {
-      m_logger.logErr("Error in client accept(): " + std::string(strerror(errno)));
+      m_logger.logErr("Error in client accept(): " +
+                      std::string(strerror(errno)));
     }
     m_logger.log("Received connection" + std::to_string(m_clientSock));
 
@@ -355,7 +379,8 @@ void FoldersManager::serverStart() {
     if (fcntlFlags == -1) {
       m_logger.logErr("error in fcntlFlags");
     } else if (fcntl(m_clientSock, F_SETFL, fcntlFlags | O_NONBLOCK) == -1) {
-      m_logger.logErr("Unable to set socket to nonblocking: " + std::string(strerror(errno)));
+      m_logger.logErr("Unable to set socket to nonblocking: " +
+                      std::string(strerror(errno)));
       exit(EXIT_FAILURE);
     }
 
@@ -363,7 +388,6 @@ void FoldersManager::serverStart() {
     std::array<struct pollfd, 1> pollFds;
     pollFds[0].fd = m_clientSock;
     pollFds[0].events = POLLIN | POLLHUP;
-
 
     m_logger.log("Polling on connections");
     poll(pollFds.data(), 2, -1);

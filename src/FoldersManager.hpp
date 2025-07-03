@@ -1,11 +1,13 @@
 #pragma once
+#include "BackupManager.hpp"
 #include "Log.hpp"
 #include <CoreServices/CoreServices.h>
 #include <filesystem>
+#include <memory>
+#include <span>
 #include <sys/un.h>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
@@ -15,22 +17,36 @@ namespace fs = std::filesystem;
 // might not have write access outside parent folder due to apple...
 extern std::string SocketAddr;
 
+// convert file time to posix time number
+time_t fsToPosixTime(fs::file_time_type time);
+
+// checks if checkParent is the initial subset of child i.e. a parent to it
+bool isParentDir(const fs::path checkParent, const fs::path child);
+
 class FolderScanner {
+  // TODO break down so FSEvents gives which specific sub folders changed. if so
+  // only scan those, not whole thing (only needed for subfolder)
 public:
   // don't scan yet since blocks callback? maybe actually ok
   // TODO separate out to precheck, do scan wait later
   FolderScanner(fs::path directory);
 
   int scan();
+  int scan(const fs::path subdir); // for FSEvents, if subdir is under dir root,
+                                   // just scan that part (speedup)
   std::vector<fs::path> getNewFiles() const;
 
 private:
   std::filesystem::path m_directoryRoot;
   enum FileUpdateType { New, Updated, Old };
-  std::unordered_map<fs::path, std::pair<FileUpdateType, fs::file_time_type>>
+  std::unordered_map<fs::path, std::pair<FileUpdateType, time_t>>
       m_files;
   std::vector<std::string> m_filetypeFilter{{".flac"}, {".txt"}};
   bool isValidExtension(const fs::directory_entry &entry);
+  BackupManager *m_backupManager; // Managed by FoldersManager
+  // internal function to do actual indexing starting at dir
+  int scanDir(const fs::path subdir);
+  void restoreContents(); // use BackupManager when first starting up
 };
 
 enum ServerCommands {
@@ -81,7 +97,7 @@ private:
   std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
 
   fs::path m_converterExe{"/bin/echo"}; // name/path of conversion executable
-  fs::path m_logFile{};               // where to load/save latest event id etc
+  fs::path m_logFile{}; // where to load/save latest event id etc
 
   void quitThread();
   // thread will be waiting for read(), handle and process it here depending on
@@ -101,8 +117,9 @@ public:
   std::string doServerQuit();
 
 private:
+  std::unique_ptr<BackupManager> m_backupManager{nullptr};
   Log::Logger m_logger;
-  int m_sock{};
+  int m_sock;
   void connect();
   void disconnect();
   int sendCommand(ServerCommands command); // convenience wrapper
