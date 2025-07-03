@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <thread>
 #include <sys/un.h>
+#include <unordered_map>
+#include <unordered_set>
 
 // AsciiNeuron - limit global vars scope
 namespace AN {
@@ -16,7 +18,7 @@ public:
   FolderScanner(fs::path directory);
 
   int scan();
-  std::vector<fs::path> getNewFiles();
+  std::vector<fs::path> getNewFiles() const;
 
 private:
   std::filesystem::path m_directoryRoot;
@@ -27,7 +29,7 @@ private:
   bool isValidExtension(const fs::directory_entry &entry);
 };
 
-enum ServerCommands { ServerListFiles, ServerCommandsCount }; // implement in foldermanager server and separate client
+enum ServerCommands { ServerListFiles, ServerQuit, ServerCommandsCount }; // implement in foldermanager server and separate client
 
 // sends formatted { uint32_t len, char *data } data to valid ready socket at fd
 void sendString(int fd, std::string_view str);
@@ -37,12 +39,17 @@ std::string recvString(int fd);
 class FoldersManager {
 public:
   FoldersManager(std::vector<fs::path> folderNames);
+  FoldersManager(); // TODO need to refactor so can add more folders iteratively later
   ~FoldersManager();
+
+  void addFolders(std::span<fs::path> folderNames);
 
   void run();
   void stop();
   void serverStart();
   void serverStop();
+
+  std::vector<fs::path> getNewFiles(); // returns list of new files in last batch
 
 private:
   // need to handle e.g. ctrl z signal to know to put it in background and write to log instead
@@ -62,31 +69,42 @@ private:
   std::thread m_runner;
   FSEventStreamRef m_stream;
   dispatch_queue_t m_queue;
-  std::vector<fs::path> m_trackedFolders;
-  std::vector<FolderScanner>
-      m_trackedFoldersScanners; // can retrieve matching filename from here
+  // std::vector<fs::path> m_trackedFolders;
+  std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
+  // std::unordered_set<fs::path> m_trackedFolders;
+  // std::vector<FolderScanner>
+  //     m_trackedFoldersScanners; // can retrieve matching filename from here
   fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
   FSEventStreamEventId m_latestEventId;
   std::string m_logFile; // where to load/save latest event id etc
+  bool first{true}; // TODO better, to not quit the first time when no event stream
 
   void quitThread();
-  // void handleSignal(); // thread will be waiting for read(), handle and process it here
+  // thread will be waiting for read(), handle and process it here depending on
+  // the specific ServerCommand
+  // fd is socket of connection to reply to
+  void handleMessage(int fd, ServerCommands command);
+  void quitEventStream();
+  void createEventStream();
 };
 
 class FoldersManagerClient {
 public:
   FoldersManagerClient();
+  ~FoldersManagerClient();
 
-  std::string getServerListFiles();
-
-  void connect();
-
-  void disconnect();
+  std::string getServerNewFiles();
+  std::string doServerQuit();
 
 private:
-  struct sockaddr_un remote{};
+  struct sockaddr_un m_remote{};
   int m_socketId{};
   int m_remoteSize{};
+  // void clearSocket(); // socket has to be created for each connection, not
+  // reused
+  void connect();
+  void disconnect();
+  int sendCommand(ServerCommands command); // convenience wrapper
 };
 
 } // namespace AN

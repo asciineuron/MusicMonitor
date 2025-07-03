@@ -1,6 +1,7 @@
 #include "FoldersManager.hpp"
 
 #include <CoreServices/CoreServices.h>
+#include <algorithm>
 #include <array>
 #include <condition_variable>
 #include <cstdint>
@@ -11,18 +12,22 @@
 #include <iostream>
 #include <iterator>
 #include <mutex>
+#include <numeric>
 #include <poll.h>
+#include <ranges>
 #include <span>
 #include <string>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
 namespace AN {
 namespace fs = std::filesystem;
+namespace ranges = std::ranges;
 
 // filename in current directory for socket communication
 // constexpr std::string SocketAddrSuffix{"mysocket"};
@@ -110,7 +115,10 @@ void fileListExecutor(const fs::path &command,
 }
 
 FolderScanner::FolderScanner(fs::path directory) : m_directoryRoot(directory) {
-  scan();
+  if (scan() == -1) {
+    std::cerr << "Scan failed\n";
+    exit(EXIT_FAILURE);
+  }
 }
 
 int FolderScanner::scan() {
@@ -142,7 +150,7 @@ bool FolderScanner::isValidExtension(const fs::directory_entry &entry) {
                      });
 }
 
-std::vector<fs::path> FolderScanner::getNewFiles() {
+std::vector<fs::path> FolderScanner::getNewFiles() const {
   std::vector<fs::path> outFiles;
   for (auto &f : m_files) {
     outFiles.emplace_back(f.first);
@@ -163,16 +171,43 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
   std::cout << "notified callback\n";
 }
 
-FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
-    : m_logger(STDOUT_FILENO), m_trackedFolders(folderNames) {
-  // set up folderscanner handlers:
-  for (const auto &folderName : folderNames) {
-    m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
+void FoldersManager::quitEventStream() {
+  if (first) {
+    first = false;
+    return;
   }
 
-  // set up fseventstream monitors:
+  // still need to update latest log change log so next guy sees it's old news
+  m_latestEventId = FSEventStreamGetLatestEventId(m_stream);
+  std::cout << "last event id: " << m_latestEventId << "\n";
+
+  std::ofstream outfilelog(m_logFile, std::ios::out | std::ios::trunc);
+  if (outfilelog) {
+    outfilelog << m_latestEventId;
+  }
+  // TODO might need to check if currently running in case of double free :/
+  FSEventStreamStop(m_stream);
+  FSEventStreamInvalidate(m_stream);
+  FSEventStreamRelease(m_stream);
+}
+
+void FoldersManager::addFolders(std::span<fs::path> folderNames) {
+  // update file list, then close and restart event stream
+  // add unique elements packed as a tuple
+  m_trackedFoldersAndScanners.insert_range(
+      folderNames | std::views::transform([](auto f) {
+        return std::tuple(f, FolderScanner(f));
+      }));
+
+  quitEventStream();
+  createEventStream();
+}
+
+void FoldersManager::createEventStream() {
   CFMutableArrayRef pathRefs = CFArrayCreateMutable(nullptr, 0, nullptr);
-  for (const std::string &folderName : folderNames) {
+  for (const auto &folderAndScanner : m_trackedFoldersAndScanners) {
+    fs::path folderName = folderAndScanner.first;
+
     CFStringRef arg = CFStringCreateWithCString(
         kCFAllocatorDefault, folderName.c_str(), kCFStringEncodingUTF8);
 
@@ -195,27 +230,42 @@ FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
         FSEventStreamCreate(NULL, &callback, nullptr, paths, m_latestEventId,
                             latency, kFSEventStreamCreateFlagNone);
 
-    m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_CONCURRENT);
-
     FSEventStreamSetDispatchQueue(m_stream, m_queue);
     if (!FSEventStreamStart(m_stream)) {
       std::cerr << "Failed to start stream\n";
       exit(EXIT_FAILURE);
     }
   }
-} // get folderNames from user input or config
+}
+
+FoldersManager::FoldersManager() : m_logger(STDOUT_FILENO) {
+  m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_CONCURRENT);
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, m_socketKillPair) == -1) {
+    m_logger.logErr("socketpair() error");
+    exit(EXIT_FAILURE);
+  }
+}
+
+FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
+    : FoldersManager() {
+  // m_trackedFolders.insert_range(folderNames);
+  // // TODO get folderNames from user input or config
+  // // TODO need to separate so can add new folders later...
+  // // Looks like we'll need to set up new event stream object...
+
+  // // set up folderscanner handlers:
+  // for (const auto &folderName : folderNames) {
+  //   m_trackedFoldersScanners.emplace_back(FolderScanner(folderName));
+  // }
+
+  addFolders(folderNames);
+  // set up fseventstream monitors:
+  createEventStream();
+}
 
 FoldersManager::~FoldersManager() {
-  m_latestEventId = FSEventStreamGetLatestEventId(m_stream);
-  std::cout << "last event id: " << m_latestEventId << "\n";
-
-  std::ofstream outfilelog(m_logFile, std::ios::out | std::ios::trunc);
-  if (outfilelog) {
-    outfilelog << m_latestEventId;
-  }
+  quitEventStream();
   dispatch_release(m_queue);
-  FSEventStreamInvalidate(m_stream);
-  FSEventStreamRelease(m_stream);
 }
 
 void FoldersManager::run() {
@@ -235,7 +285,8 @@ void FoldersManager::run() {
 
       std::vector<fs::path> filesToProcess;
       // index and get list of all new files:
-      for (FolderScanner &folderScanner : this->m_trackedFoldersScanners) {
+      for (auto &folderAndScanner : m_trackedFoldersAndScanners) {
+        FolderScanner &folderScanner = folderAndScanner.second;
         if (folderScanner.scan() == -1) {
           std::cerr << "Error: Failed to complete folder scan.";
           exit(EXIT_FAILURE);
@@ -322,6 +373,7 @@ void FoldersManager::serverStart() {
       // received data from kill channel, quit server loop
       m_logger.log("Received socketpair quit signal");
       break;
+
     } else if (pollFds[1].revents & POLLIN) {
       // TODO split out main thread processing logic here, esp at switch
       m_logger.log("Client message ready to read");
@@ -335,40 +387,65 @@ void FoldersManager::serverStart() {
       if (num == 0) {
         m_logger.log("Maybe err: received EOF from recv");
       }
-
       m_logger.log("Received value: " + std::to_string(command));
-      switch (command) {
-      case ServerListFiles: {
-        // return a string of all new files
-        std::string listFiles;
-        for (auto &scanner : m_trackedFoldersScanners) {
-          std::vector<fs::path> newfiles = scanner.getNewFiles();
-          for (auto &file : newfiles) {
-            listFiles = listFiles + "," + file.string();
-          }
-        }
 
-        // if (send(clientId, listFiles.c_str(), listFiles.size(), 0) < 0) {
-        //   m_logger.logErr("Failed at send");
-        //   exit(EXIT_FAILURE);
-        // }
-        sendString(clientId, listFiles);
-
-        close(clientId); // TODO add this? Not sure if we also want to terminate the connection here, but prob
-        break;
-      }
-      default:
-        continue;
-      }
+      handleMessage(clientId, command);
+      close(clientId); // TODO add this? Not sure if we also want to terminate
+                       // the connection here, but prob
     }
   }
 }
 
 void FoldersManager::serverStop() {
-  // open socketpair and send message to network thread
+  // open socketpair and send message to network thread, call when receive
+  // quit command from client
+  uint32_t msg = 0; // just send something to trigger ready
+  if (send(m_socketKillPair[0], &msg, sizeof(msg), 0) == -1) {
+    std::cerr << "Failed to send quit message to server\n";
+    exit(EXIT_FAILURE);
+  }
 }
 
-// void FoldersManager::handleSignal() {}
+std::vector<fs::path> FoldersManager::getNewFiles() {
+  std::vector<fs::path> newFiles;
+  for (auto &folderAndScanner : m_trackedFoldersAndScanners) {
+    auto &scanner = folderAndScanner.second;
+    auto moreFiles = scanner.getNewFiles();
+    newFiles.insert(newFiles.end(), moreFiles.begin(), moreFiles.end());
+  }
+  return newFiles;
+}
+
+void FoldersManager::handleMessage(int fd, ServerCommands command) {
+  switch (command) {
+  case ServerListFiles: {
+    // return a string of all new files
+
+    // for (auto &scanner : m_trackedFoldersScanners) {
+    //   std::vector<fs::path> newfiles = scanner.getNewFiles();
+    //   for (auto &file : newfiles) {
+    //     listFiles = listFiles + "," + file.string();
+    //   }
+    // }
+    auto newFiles = getNewFiles();
+    std::string listFiles;
+    listFiles = std::accumulate(newFiles.begin(), newFiles.end(), listFiles,
+                                [](std::string str, const fs::path path) {
+                                  return str.append(path.string() + ",");
+                                });
+    listFiles.pop_back(); // remove last ','
+
+    sendString(fd, listFiles);
+    break;
+  }
+  case ServerQuit: {
+    serverStop();
+    break;
+  }
+  default:
+    break;
+  }
+}
 
 void FoldersManager::quitThread() {
   // send stop to worker thread
@@ -382,34 +459,42 @@ void FoldersManager::quitThread() {
 }
 
 void sendString(int fd, std::string_view msg) {
+  // TODO implement similar loop as recvString in case send doesn't do all bytes
+  // (same return value as recv)
+  // send header
   uint32_t strsize = msg.length();
   if (send(fd, &strsize, sizeof(strsize), 0) == -1) {
     std::cerr << "Failed to send() string size\n";
   }
+  // send body
   if (send(fd, msg.data(), msg.length(), 0) == -1) {
     std::cerr << "Failed to send() string data\n";
   }
 }
 
 std::string recvString(int fd) {
+  // read header
   uint32_t strsize;
   if (recv(fd, &strsize, sizeof(strsize), 0) != sizeof(strsize)) {
     std::cerr << "Failed to recv() string size\n";
   }
+  // read body
   std::vector<char> buffer(strsize);
   size_t charsReceived = 0;
-  // std::string buffer(strsize+1, '\0'); // extra final nullptr
+  size_t charsRemaining = strsize;
   int res;
-  while (charsReceived != buffer.size()) {
-    res = recv(fd, &buffer[charsReceived], strsize, 0);
-    if (res == strsize) {
-      break;
-    } else if (res == -1) {
+  while (charsRemaining > 0) {
+    res = recv(fd, &buffer[charsReceived], charsRemaining, 0);
+    if (res == -1) {
       std::cerr << "Failed to recv() string data\n";
+    } else if (res == 0) {
+      std::cerr
+          << "Socket closed connection before completed sending message\n";
     } else {
       // not all data yet received, keep going
       // processed res bytes
       charsReceived += res;
+      charsRemaining -= res;
     }
   }
   std::string out(buffer.begin(), buffer.end());
@@ -417,11 +502,12 @@ std::string recvString(int fd) {
 }
 
 FoldersManagerClient::FoldersManagerClient() {
-  remote.sun_family = AF_UNIX;
-  strcpy(remote.sun_path, SocketAddr.c_str());
-  m_remoteSize = sizeof(remote.sun_family) + strlen(remote.sun_path);
-  // connect();
+  m_remote.sun_family = AF_UNIX;
+  strcpy(m_remote.sun_path, SocketAddr.c_str());
+  m_remoteSize = sizeof(m_remote.sun_family) + strlen(m_remote.sun_path);
 }
+
+FoldersManagerClient::~FoldersManagerClient() { disconnect(); }
 
 void FoldersManagerClient::connect() {
   // main gateway to each function, re-establish connection. Makes streaming
@@ -433,7 +519,7 @@ void FoldersManagerClient::connect() {
   }
 
   // need global scope resolver for connect()
-  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&remote),
+  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&m_remote),
                 m_remoteSize) == -1) {
     std::cerr << "client connect() call error\n";
     exit(EXIT_FAILURE);
@@ -442,12 +528,18 @@ void FoldersManagerClient::connect() {
   std::cout << "connected\n";
 }
 
-std::string FoldersManagerClient::getServerListFiles() {
+std::string FoldersManagerClient::getServerNewFiles() {
+  // TODO error handling if empty. When no files I saw total buffer overflow
+  // garbage
+
+  // gets a list of all monitored directories
   connect();
-  ServerCommands value = ServerCommands::ServerListFiles;
-  if (send(m_socketId, &value, sizeof(value), 0) == -1) {
-    std::cerr << "send() error " << strerror(errno) << "\n";
-  }
+
+  sendCommand(ServerListFiles);
+  // ServerCommands value = ServerCommands::ServerListFiles;
+  // if (send(m_socketId, &value, sizeof(value), 0) == -1) {
+  //   std::cerr << "send() error " << strerror(errno) << "\n";
+  // }
 
   // std::string out;
   // char recvData[100];
@@ -466,10 +558,30 @@ std::string FoldersManagerClient::getServerListFiles() {
   return out;
 }
 
+int FoldersManagerClient::sendCommand(ServerCommands command) {
+  int ret = send(m_socketId, &command, sizeof(command), 0);
+  if (ret == -1) {
+    std::cerr << "send() error " << strerror(errno) << "\n";
+  }
+  return ret;
+}
+
+std::string FoldersManagerClient::doServerQuit() {
+  // tell server to quit and query response
+  connect();
+
+  sendCommand(ServerQuit);
+
+  std::string out = recvString(m_socketId);
+  disconnect();
+  return out;
+}
+
 void FoldersManagerClient::disconnect() {
   // don't stop server, but tell it we are done and closing our connection so it
   // waits for someone new
-  close(m_socketId); // TODO add error or status check
+  close(m_socketId);         // TODO add error or status check
+  unlink(m_remote.sun_path); // remove this reference
 }
 
 }; // namespace AN
