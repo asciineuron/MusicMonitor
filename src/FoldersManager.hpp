@@ -11,6 +11,10 @@
 namespace AN {
 namespace fs = std::filesystem;
 
+// const std::string SocketAddr{"/home/aleshapp/mysocket"};
+// might not have write access outside parent folder due to apple...
+extern std::string SocketAddr;
+
 class FolderScanner {
 public:
   // don't scan yet since blocks callback? maybe actually ok
@@ -57,7 +61,10 @@ private:
 
   // for server use, not needed for client
   int m_socketId;
+  int m_clientId;
+  struct sockaddr_un local; // TODO refactor all this to server class
   // to start/stop network thread
+  // TODO still keep for graceful local kill maybe, otherwise just exit(success) from quit message...
   int m_socketKillPair[2];
   // filename in current dir for socket
   // network thread to listen for and handle connections
@@ -99,7 +106,6 @@ public:
 private:
   struct sockaddr_un m_remote{};
   int m_socketId{};
-  int m_remoteSize{};
   // void clearSocket(); // socket has to be created for each connection, not
   // reused
   void connect();

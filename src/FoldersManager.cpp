@@ -34,8 +34,7 @@ namespace ranges = std::ranges;
 
 // const std::string SocketAddr{"/home/aleshapp/mysocket"};
 // might not have write access outside parent folder due to apple...
-const std::string SocketAddr{
-    "/Users/alex/Ext/Code/MusicMonitor/build/mysocket"};
+std::string SocketAddr;
 
 std::condition_variable doScanCV;
 std::mutex doScanMutex;
@@ -309,6 +308,8 @@ void FoldersManager::stop() {
   m_runner.join();
 }
 
+void unlinkSocket() { unlink(SocketAddr.c_str()); }
+
 void FoldersManager::serverStart() {
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
@@ -317,21 +318,40 @@ void FoldersManager::serverStart() {
     m_logger.logErr("Unable to open socket.");
     exit(EXIT_FAILURE);
   }
+  const int sockoptOn = 1;
+  struct linger sockoptLinger = {0, 0};
+  if ((setsockopt(m_socketId, SOL_SOCKET, SO_REUSEADDR, &sockoptOn,
+                  sizeof(sockoptOn)) == -1) ||
+      (setsockopt(m_socketId, SOL_SOCKET, SO_REUSEPORT, &sockoptOn,
+                  sizeof(sockoptOn)) == -1) ||
+      (setsockopt(m_socketId, SOL_SOCKET, SO_LINGER, &sockoptLinger,
+                  sizeof(sockoptLinger)) == -1)) {
+    m_logger.logErr("Failed to call setsockopt()");
+    exit(EXIT_FAILURE);
+  }
 
   // remote filled later by accept(), local filled when creating socket
-  struct sockaddr_un remote, local;
+  struct sockaddr_un remote;
   // remote filled by accept()
   local.sun_family = AF_UNIX;
   // point us to the socket address
   strcpy(local.sun_path, SocketAddr.c_str());
   // remove reference to file. if open nowhere else, delete it (so reset socket
   // file when starting server)
-  unlink(local.sun_path);
+  std::cout << local.sun_path << "\n";
+  local.sun_len = (sizeof(local.sun_family) + strlen(local.sun_path) + 1);
 
+  unlink(local.sun_path);
   // bind socket num to file address
   if (bind(m_socketId, (struct sockaddr *)&local,
-           (sizeof(local.sun_family) + strlen(SocketAddr.c_str()))) == -1) {
-    m_logger.logErr("Unable to bind socket to address: " + SocketAddr);
+           local.sun_len) == -1) {
+    m_logger.logErr("Unable to bind socket to address: " + SocketAddr + "\n" +
+                    strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  if (atexit(unlinkSocket) == -1) {
+    m_logger.logErr("Unable to link atexit()");
     exit(EXIT_FAILURE);
   }
 
@@ -345,20 +365,20 @@ void FoldersManager::serverStart() {
     socklen_t remoteLen = sizeof(remote);
     m_logger.log("Waiting for connections");
 
-    // wait until receive client:
-    int clientId =
+    // wait until receive client: TODO wrong if sending quit don't want to wait
+    m_clientId =
         accept(m_socketId, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
     // set socket to be nonblocking
-    if (fcntl(clientId, F_SETFL, fcntl(clientId, F_GETFL, 0) | O_NONBLOCK) ==
-        -1) {
+    if (fcntl(m_clientId, F_SETFL,
+              fcntl(m_clientId, F_GETFL, 0) | O_NONBLOCK) == -1) {
       m_logger.logErr("Unable to set socket to nonblocking");
       exit(EXIT_FAILURE);
     }
-    m_logger.log("Received connection" + std::to_string(clientId));
+    m_logger.log("Received connection" + std::to_string(m_clientId));
 
     // now do poll loop waiting for message from pair
     std::array<struct pollfd, 2> pollFds;
-    pollFds[1].fd = clientId;
+    pollFds[1].fd = m_clientId;
     // handle closed connection POLLHUP to
     // not quit but release client
     pollFds[1].events = POLLIN | POLLHUP;
@@ -379,7 +399,7 @@ void FoldersManager::serverStart() {
       m_logger.log("Client message ready to read");
       ServerCommands command; // prepare for reading from socket
 
-      int num = recv(clientId, &command, sizeof(command), 0);
+      int num = recv(m_clientId, &command, sizeof(command), 0);
       if (num < 0) {
         m_logger.logErr("Failed at recv");
         exit(EXIT_FAILURE);
@@ -389,9 +409,9 @@ void FoldersManager::serverStart() {
       }
       m_logger.log("Received value: " + std::to_string(command));
 
-      handleMessage(clientId, command);
-      close(clientId); // TODO add this? Not sure if we also want to terminate
-                       // the connection here, but prob
+      handleMessage(m_clientId, command);
+      close(m_clientId); // TODO add this? Not sure if we also want to terminate
+                         // the connection here, but prob
     }
   }
 }
@@ -399,11 +419,16 @@ void FoldersManager::serverStart() {
 void FoldersManager::serverStop() {
   // open socketpair and send message to network thread, call when receive
   // quit command from client
-  uint32_t msg = 0; // just send something to trigger ready
-  if (send(m_socketKillPair[0], &msg, sizeof(msg), 0) == -1) {
-    std::cerr << "Failed to send quit message to server\n";
-    exit(EXIT_FAILURE);
-  }
+  // uint32_t msg = 0xFFFFFFFF; // just send something to trigger ready
+  // if (send(m_socketKillPair[0], &msg, sizeof(msg), 0) == -1) {
+  //   std::cerr << "Failed to send quit message to server\n";
+  //   exit(EXIT_FAILURE);
+  // }
+  // TODO note we are just looping so just tidy up then exit
+  unlink(local.sun_path);
+  close(m_clientId);
+  m_logger.log("Quitting from client request");
+  exit(EXIT_SUCCESS);
 }
 
 std::vector<fs::path> FoldersManager::getNewFiles() {
@@ -439,6 +464,8 @@ void FoldersManager::handleMessage(int fd, ServerCommands command) {
     break;
   }
   case ServerQuit: {
+    std::string msg = "server quitting.\n";
+    sendString(fd, msg);
     serverStop();
     break;
   }
@@ -504,7 +531,7 @@ std::string recvString(int fd) {
 FoldersManagerClient::FoldersManagerClient() {
   m_remote.sun_family = AF_UNIX;
   strcpy(m_remote.sun_path, SocketAddr.c_str());
-  m_remoteSize = sizeof(m_remote.sun_family) + strlen(m_remote.sun_path);
+  m_remote.sun_len = sizeof(m_remote.sun_family) + strlen(m_remote.sun_path) + 1;
 }
 
 FoldersManagerClient::~FoldersManagerClient() { disconnect(); }
@@ -520,7 +547,7 @@ void FoldersManagerClient::connect() {
 
   // need global scope resolver for connect()
   if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&m_remote),
-                m_remoteSize) == -1) {
+                m_remote.sun_len) == -1) {
     std::cerr << "client connect() call error\n";
     exit(EXIT_FAILURE);
   }
@@ -580,8 +607,8 @@ std::string FoldersManagerClient::doServerQuit() {
 void FoldersManagerClient::disconnect() {
   // don't stop server, but tell it we are done and closing our connection so it
   // waits for someone new
-  close(m_socketId);         // TODO add error or status check
   unlink(m_remote.sun_path); // remove this reference
+  close(m_socketId);         // TODO add error or status check
 }
 
 }; // namespace AN

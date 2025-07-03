@@ -50,6 +50,8 @@ void exit_cleanup(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+  AN::SocketAddr = fs::temp_directory_path() / "musicmonitorsocket";
+  std::cout << AN::SocketAddr << "\n";
   printArgs(argc, argv);
   // AN::Log::printFmt("Hello world!", {AN::Log::AnsiUnderline});
   AN::Log::Logger logger(STDOUT_FILENO);
@@ -164,10 +166,12 @@ int main(int argc, char *argv[]) {
       // TODO use getopt to add client query commands eg 'list' 'add' etc
       logger.log("Connected as client.");
       AN::FoldersManagerClient client;
-      // std::string serverList = client.getServerNewFiles();
-      // std::cout << "received: " << serverList << "\n";
-      if (pArg == "quit") {
-        client.doServerQuit();
+      if (pArg == "list") {
+        std::string serverList = client.getServerNewFiles();
+        std::cout << "received: " << serverList << "\n";
+      } else if (pArg == "quit") {
+        std::string response = client.doServerQuit();
+        std::cout << "received: " << response << "\n";
       }
     }
   }
