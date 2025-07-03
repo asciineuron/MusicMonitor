@@ -332,6 +332,7 @@ void FoldersManager::serverStart() {
 
   // remote filled later by accept(), local filled when creating socket
   struct sockaddr_un remote;
+  struct sockaddr_un local; // TODO refactor all this to server class
   // remote filled by accept()
   local.sun_family = AF_UNIX;
   // point us to the socket address
@@ -343,8 +344,7 @@ void FoldersManager::serverStart() {
 
   unlink(local.sun_path);
   // bind socket num to file address
-  if (bind(m_socketId, (struct sockaddr *)&local,
-           local.sun_len) == -1) {
+  if (bind(m_socketId, (struct sockaddr *)&local, local.sun_len) == -1) {
     m_logger.logErr("Unable to bind socket to address: " + SocketAddr + "\n" +
                     strerror(errno));
     exit(EXIT_FAILURE);
@@ -425,7 +425,6 @@ void FoldersManager::serverStop() {
   //   exit(EXIT_FAILURE);
   // }
   // TODO note we are just looping so just tidy up then exit
-  unlink(local.sun_path);
   close(m_clientId);
   m_logger.log("Quitting from client request");
   exit(EXIT_SUCCESS);
@@ -528,17 +527,19 @@ std::string recvString(int fd) {
   return out;
 }
 
-FoldersManagerClient::FoldersManagerClient() {
-  m_remote.sun_family = AF_UNIX;
-  strcpy(m_remote.sun_path, SocketAddr.c_str());
-  m_remote.sun_len = sizeof(m_remote.sun_family) + strlen(m_remote.sun_path) + 1;
-}
+FoldersManagerClient::FoldersManagerClient() {}
 
 FoldersManagerClient::~FoldersManagerClient() { disconnect(); }
 
 void FoldersManagerClient::connect() {
   // main gateway to each function, re-establish connection. Makes streaming
   // sockets easy to read to completion vs separating several commands+output
+  struct sockaddr_un remoteAddr;
+  remoteAddr.sun_family = AF_UNIX;
+  strcpy(remoteAddr.sun_path, SocketAddr.c_str());
+  remoteAddr.sun_len =
+      sizeof(remoteAddr.sun_family) + strlen(remoteAddr.sun_path) + 1;
+  // + 1 for null terminator
 
   if ((m_socketId = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
     std::cerr << "client socket() call error\n";
@@ -546,8 +547,8 @@ void FoldersManagerClient::connect() {
   }
 
   // need global scope resolver for connect()
-  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&m_remote),
-                m_remote.sun_len) == -1) {
+  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&remoteAddr),
+                remoteAddr.sun_len) == -1) {
     std::cerr << "client connect() call error\n";
     exit(EXIT_FAILURE);
   }
@@ -607,8 +608,7 @@ std::string FoldersManagerClient::doServerQuit() {
 void FoldersManagerClient::disconnect() {
   // don't stop server, but tell it we are done and closing our connection so it
   // waits for someone new
-  unlink(m_remote.sun_path); // remove this reference
-  close(m_socketId);         // TODO add error or status check
+  close(m_socketId); // TODO add error or status check
 }
 
 }; // namespace AN
