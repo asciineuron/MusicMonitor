@@ -29,14 +29,6 @@
 namespace fs = std::filesystem;
 // namespace ranges = std::ranges;
 
-// some simple data to share from calling main and the run thread
-// atomic instead of cv+mutex
-// struct ThreadAccess {
-//   // std::atomic_bool shouldQuit;
-// };
-
-// ThreadAccess accessManager; // shared state from calling code to start/end :(
-
 void printArgs(int argc, char *argv[]) {
   for (int i = 0; i < argc; ++i) {
     std::cout << i << " : " << argv[i] << "\n";
@@ -44,28 +36,29 @@ void printArgs(int argc, char *argv[]) {
 }
 
 void exit_cleanup(int sig) {
-  // AN::isRunning = false;
   write(2, "caught SIGINT, bye!\n", 21);
-  exit(0); // TODO let's figure out how to gradually quit next...
+  exit(0); // TODO let's figure out how to gradually quit ...
 }
 
 int main(int argc, char *argv[]) {
   AN::SocketAddr = fs::temp_directory_path() / "musicmonitorsocket";
-  std::cout << AN::SocketAddr << "\n";
-  printArgs(argc, argv);
-  // AN::Log::printFmt("Hello world!", {AN::Log::AnsiUnderline});
   AN::Log::Logger logger(STDOUT_FILENO);
-  logger.log("Hello world!");
-  // TODO split into pseudo client server. Check socket if running, if so client
-  // else server. use to query stats etc
+  // logger.log("Hello world!");
 
+  // ignore all signals, later dedicate special thread to handle these
+  sigset_t set;
+  sigemptyset(&set);
+  if (pthread_sigmask(SIG_SETMASK, &set, nullptr) == -1) {
+        logger.logErr("pthread_sigmask() error: " + std::string(strerror(errno)));
+  }
+
+  // handle sigint (move to handling thread)
   struct sigaction sigact = {exit_cleanup, 0, 0};
   if (sigaction(SIGINT, &sigact, nullptr) == -1) {
     logger.logErr("failed to register sigaction");
     exit(EXIT_FAILURE);
   }
   if (argc == 1) {
-    std::cerr << "Need to specify one or more paths to monitor.\n";
     logger.logErr("Need to specify one or more paths to monitor");
     exit(EXIT_FAILURE);
   }
@@ -83,15 +76,12 @@ int main(int argc, char *argv[]) {
   while ((c = getopt(argc, argv, "cp:")) != -1) {
     switch (c) {
     case 'p':
-      std::cout << "trying to connect to server...\n";
+      logger.log("trying to connect to server...");
       runOnTty = false;
-      // optarg guaranteed 0 if optional arg not present
-      // if (optarg) {
       pArg = std::string(optarg);
-      // }
       break;
     case 'c':
-      std::cout << "trying to create a server...\n";
+      logger.log("trying to create a server...");
       runOnTty = false;
       runAsServer = true;
       break;
@@ -102,7 +92,7 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  std::cout << pArg << "\n";
+
   // launch actual program if we aren't a client
   AN::FoldersManager folderManager;
   bool isClient = !runAsServer && !runOnTty;
@@ -157,14 +147,13 @@ int main(int argc, char *argv[]) {
 
     tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
   } else {
-    // TODO set up server and detach
-    // start listening on a socket for commands
     if (runAsServer) {
       folderManager.serverStart();
-
+      // TODO set up detaching/daemon for server
+      // start listening on a socket for commands
     } else {
       // TODO use getopt to add client query commands eg 'list' 'add' etc
-      logger.log("Connected as client.");
+      logger.log("Connecting as client.");
       AN::FoldersManagerClient client;
       if (pArg == "list") {
         std::string serverList = client.getServerNewFiles();
@@ -178,8 +167,3 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
-
-// TODO Note termios.h ICANON mode allows control over realtime input but limits
-// buffering etc
-// see
-// https://stackoverflow.com/questions/1798511/how-to-avoid-pressing-enter-with-getchar-for-reading-a-single-character-only

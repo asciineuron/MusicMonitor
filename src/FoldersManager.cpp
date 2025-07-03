@@ -15,6 +15,7 @@
 #include <numeric>
 #include <poll.h>
 #include <ranges>
+#include <set>
 #include <span>
 #include <string>
 #include <sys/poll.h>
@@ -29,11 +30,7 @@ namespace AN {
 namespace fs = std::filesystem;
 namespace ranges = std::ranges;
 
-// filename in current directory for socket communication
-// constexpr std::string SocketAddrSuffix{"mysocket"};
-
-// const std::string SocketAddr{"/home/aleshapp/mysocket"};
-// might not have write access outside parent folder due to apple...
+// filename in temp directory for socket communication
 std::string SocketAddr;
 
 std::condition_variable doScanCV;
@@ -42,6 +39,8 @@ bool doScan;
 
 void fileListExecutor(const fs::path &command,
                       std::span<const fs::path> filenames, bool doParallel) {
+// void fileListExecutor(const fs::path &command,
+//                       std::set<fs::path> filenames, bool doParallel) {
   const int commandLen = strlen(command.c_str());
 
   // do basic fork exec for the command on each filename
@@ -75,6 +74,7 @@ void fileListExecutor(const fs::path &command,
             exit(EXIT_FAILURE);
           }
         }
+        std::cout << "processing eg" << argv[1] << "\n";
       }));
     }
 
@@ -90,12 +90,12 @@ void fileListExecutor(const fs::path &command,
         malloc(sizeof(char) * (argc + 1))); // +1 for final null element
 
     argv[0] = static_cast<char *>(malloc(sizeof(char) * (commandLen + 1)));
-    strcpy(argv[0], command.c_str());
+    strncpy(argv[0], command.c_str(), commandLen + 1);
 
     for (int i = 1; i < argc; ++i) {
       argv[i] = static_cast<char *>(
           malloc(sizeof(char) * (strlen(filenames[i - 1].c_str()) + 1)));
-      strcpy(argv[i], filenames[i - 1].c_str());
+      strncpy(argv[i], filenames[i - 1].c_str(), strlen(filenames[i - 1].c_str()) + 1);
     }
     argv[argc] = nullptr;
     // printArgs(argc, argv);
@@ -152,7 +152,9 @@ bool FolderScanner::isValidExtension(const fs::directory_entry &entry) {
 std::vector<fs::path> FolderScanner::getNewFiles() const {
   std::vector<fs::path> outFiles;
   for (auto &f : m_files) {
-    outFiles.emplace_back(f.first);
+    if (f.second.first == New || f.second.first == Updated) {
+      outFiles.emplace_back(f.first);
+    }
   }
   return outFiles;
 }
@@ -166,7 +168,7 @@ void callback(ConstFSEventStreamRef stream, void *callbackInfo,
     doScan = true;
   }
   // this needs to come after the lock_guard is released:
-  doScanCV.notify_all();
+  doScanCV.notify_one();
   std::cout << "notified callback\n";
 }
 
@@ -178,7 +180,7 @@ void FoldersManager::quitEventStream() {
 
   // still need to update latest log change log so next guy sees it's old news
   m_latestEventId = FSEventStreamGetLatestEventId(m_stream);
-  std::cout << "last event id: " << m_latestEventId << "\n";
+  m_logger.log("last event id: " + std::to_string(m_latestEventId) + "\n");
 
   std::ofstream outfilelog(m_logFile, std::ios::out | std::ios::trunc);
   if (outfilelog) {
@@ -221,7 +223,7 @@ void FoldersManager::createEventStream() {
       if (infilelog >> m_latestEventId) {
         std::cout << "restoring latest event id: " << m_latestEventId;
       } else {
-        std::cout << "starting timestamp now \n";
+        m_logger.log("starting timestamp now");
         m_latestEventId = kFSEventStreamEventIdSinceNow;
       }
     }
@@ -262,6 +264,10 @@ void FoldersManager::run() {
   // launch a thread
   m_runner = std::thread([this]() {
     while (1) {
+      {
+        std::lock_guard<std::mutex> lock(doScanMutex);
+        doScan = false;
+      }
       // first wait for pipe/mutex+cv
       std::unique_lock<std::mutex> uniqueLock(doScanMutex);
       // cvSyncFSEventStreamToFolderManager.wait(uniqueLock);
@@ -288,7 +294,7 @@ void FoldersManager::run() {
       // pass to executor
       fileListExecutor(this->m_converterExe, filesToProcess, false);
     }
-    std::cout << "NOTE I am quitting nicely\n";
+    m_logger.log("NOTE I am quitting nicely");
   });
 }
 
@@ -313,11 +319,9 @@ void FoldersManager::serverStart() {
   local.sun_family = AF_UNIX;
   // point us to the socket address
   strcpy(local.sun_path, SocketAddr.c_str());
-  // remove reference to file. if open nowhere else, delete it (so reset socket
-  // file when starting server)
-  std::cout << local.sun_path << "\n";
   local.sun_len = (sizeof(local.sun_family) + strlen(local.sun_path) + 1);
 
+  // delete file if already existing
   unlink(local.sun_path);
   // bind socket num to file address
   if (bind(m_serverSock, (struct sockaddr *)&local, local.sun_len) == -1) {
@@ -339,20 +343,27 @@ void FoldersManager::serverStart() {
     // fill out received client address binding
     m_clientSock =
         accept(m_serverSock, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
-
-    // set socket to be nonblocking
-    if (fcntl(m_clientSock, F_SETFL,
-              fcntl(m_clientSock, F_GETFL, 0) | O_NONBLOCK) == -1) {
-      m_logger.logErr("Unable to set socket to nonblocking");
-      exit(EXIT_FAILURE);
+    if (m_clientSock == -1) {
+      m_logger.logErr("Error in client accept(): " + std::string(strerror(errno)));
     }
     m_logger.log("Received connection" + std::to_string(m_clientSock));
+
+    // TODO note crashing fcntl when file touched despite no client connected
+    // Can maybe ignore
+    // set socket to be nonblocking
+    int fcntlFlags = fcntl(m_clientSock, F_GETFL, 0);
+    if (fcntlFlags == -1) {
+      m_logger.logErr("error in fcntlFlags");
+    } else if (fcntl(m_clientSock, F_SETFL, fcntlFlags | O_NONBLOCK) == -1) {
+      m_logger.logErr("Unable to set socket to nonblocking: " + std::string(strerror(errno)));
+      exit(EXIT_FAILURE);
+    }
 
     // now do poll loop waiting for message from pair
     std::array<struct pollfd, 1> pollFds;
     pollFds[0].fd = m_clientSock;
     pollFds[0].events = POLLIN | POLLHUP;
-    ;
+
 
     m_logger.log("Polling on connections");
     poll(pollFds.data(), 2, -1);
@@ -475,7 +486,7 @@ std::string recvString(int fd) {
   return out;
 }
 
-FoldersManagerClient::FoldersManagerClient() {}
+FoldersManagerClient::FoldersManagerClient() : m_logger(STDOUT_FILENO) {}
 
 FoldersManagerClient::~FoldersManagerClient() { disconnect(); }
 
@@ -490,18 +501,18 @@ void FoldersManagerClient::connect() {
   // + 1 for null terminator
 
   if ((m_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
-    std::cerr << "client socket() call error\n";
+    m_logger.logErr("client socket() call error");
     exit(EXIT_FAILURE);
   }
 
   // need global scope resolver for connect()
   if (::connect(m_sock, reinterpret_cast<sockaddr *>(&remoteAddr),
                 remoteAddr.sun_len) == -1) {
-    std::cerr << "client connect() call error\n";
+    m_logger.logErr("client connect() call error");
     exit(EXIT_FAILURE);
   }
 
-  std::cout << "connected\n";
+  m_logger.log("connected");
 }
 
 std::string FoldersManagerClient::getServerNewFiles() {
@@ -521,7 +532,8 @@ std::string FoldersManagerClient::getServerNewFiles() {
 int FoldersManagerClient::sendCommand(ServerCommands command) {
   int ret = send(m_sock, &command, sizeof(command), 0);
   if (ret == -1) {
-    std::cerr << "send() error " << strerror(errno) << "\n";
+    std::string error(strerror(errno));
+    m_logger.logErr("send() error " + error + "\n");
   }
   return ret;
 }

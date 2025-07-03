@@ -80,7 +80,7 @@ private:
   // this keeps them unique and easily tracked together:
   std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
 
-  fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
+  fs::path m_converterExe{"/bin/echo"}; // name/path of conversion executable
   fs::path m_logFile{};               // where to load/save latest event id etc
 
   void quitThread();
@@ -101,6 +101,7 @@ public:
   std::string doServerQuit();
 
 private:
+  Log::Logger m_logger;
   int m_sock{};
   void connect();
   void disconnect();
