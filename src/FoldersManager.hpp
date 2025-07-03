@@ -2,8 +2,8 @@
 #include "Log.hpp"
 #include <CoreServices/CoreServices.h>
 #include <filesystem>
-#include <thread>
 #include <sys/un.h>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -33,7 +33,11 @@ private:
   bool isValidExtension(const fs::directory_entry &entry);
 };
 
-enum ServerCommands { ServerListFiles, ServerQuit, ServerCommandsCount }; // implement in foldermanager server and separate client
+enum ServerCommands {
+  ServerListFiles,
+  ServerQuit,
+  ServerCommandsCount
+}; // implement in foldermanager server and separate client
 
 // sends formatted { uint32_t len, char *data } data to valid ready socket at fd
 void sendString(int fd, std::string_view str);
@@ -43,7 +47,8 @@ std::string recvString(int fd);
 class FoldersManager {
 public:
   FoldersManager(std::vector<fs::path> folderNames);
-  FoldersManager(); // TODO need to refactor so can add more folders iteratively later
+  FoldersManager(); // TODO need to refactor so can add more folders iteratively
+                    // later
   ~FoldersManager();
 
   void addFolders(std::span<fs::path> folderNames);
@@ -53,36 +58,30 @@ public:
   void serverStart();
   void serverStop();
 
-  std::vector<fs::path> getNewFiles(); // returns list of new files in last batch
+  std::vector<fs::path>
+  getNewFiles(); // returns list of new files in last batch
 
 private:
-  // need to handle e.g. ctrl z signal to know to put it in background and write to log instead
+  // need to handle e.g. ctrl z signal to know to put it in background and write
+  // to log instead
   Log::Logger m_logger;
 
-  // for server use, not needed for client
-  int m_socketId;
-  int m_clientId;
+  // for server use, client FoldersManagerClient has own copy
+  int m_serverSock;
+  int m_clientSock;
   // to start/stop network thread
-  // TODO still keep for graceful local kill maybe, otherwise just exit(success) from quit message...
-  bool m_serverRunning; // maybe instead of kill pair, not needed
-  // filename in current dir for socket
-  // network thread to listen for and handle connections
-  // std::thread m_socketThread;
-  // fs::path m_socketAddrPrefix{}; // TODO improve this
+  bool m_serverRunning{false};
 
-  std::string m_logAddrPrefix{"mylog"}; // append to current working directory
-  std::atomic_bool isRunning;
-  std::thread m_runner;
+  std::atomic_bool isRunning{false};
+  std::thread m_runner{};
   FSEventStreamRef m_stream{nullptr};
-  dispatch_queue_t m_queue{nullptr};
-  // std::vector<fs::path> m_trackedFolders;
-  std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
-  // std::unordered_set<fs::path> m_trackedFolders;
-  // std::vector<FolderScanner>
-  //     m_trackedFoldersScanners; // can retrieve matching filename from here
-  fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
   FSEventStreamEventId m_latestEventId;
-  std::string m_logFile; // where to load/save latest event id etc
+  dispatch_queue_t m_queue{nullptr};
+  // this keeps them unique and easily tracked together:
+  std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
+
+  fs::path m_converterExe{"/bin/ls"}; // name/path of conversion executable
+  fs::path m_logFile{};               // where to load/save latest event id etc
 
   void quitThread();
   // thread will be waiting for read(), handle and process it here depending on
@@ -102,10 +101,7 @@ public:
   std::string doServerQuit();
 
 private:
-  struct sockaddr_un m_remote{};
-  int m_socketId{};
-  // void clearSocket(); // socket has to be created for each connection, not
-  // reused
+  int m_sock{};
   void connect();
   void disconnect();
   int sendCommand(ServerCommands command); // convenience wrapper

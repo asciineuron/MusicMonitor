@@ -301,15 +301,14 @@ void FoldersManager::serverStart() {
   m_serverRunning = true;
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
-  m_socketId = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (m_socketId == 1) {
+  m_serverSock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (m_serverSock == 1) {
     m_logger.logErr("Unable to open socket.");
     exit(EXIT_FAILURE);
   }
 
-  // remote filled later by accept(), local filled when creating socket
-  struct sockaddr_un remote;
-  struct sockaddr_un local; // TODO refactor all this to server class
+  // fill out local socket address binding
+  struct sockaddr_un local;
   // remote filled by accept()
   local.sun_family = AF_UNIX;
   // point us to the socket address
@@ -321,36 +320,37 @@ void FoldersManager::serverStart() {
 
   unlink(local.sun_path);
   // bind socket num to file address
-  if (bind(m_socketId, (struct sockaddr *)&local, local.sun_len) == -1) {
+  if (bind(m_serverSock, (struct sockaddr *)&local, local.sun_len) == -1) {
     m_logger.logErr("Unable to bind socket to address: " + SocketAddr + "\n" +
                     strerror(errno));
     exit(EXIT_FAILURE);
   }
 
-  if (listen(m_socketId, 3) == -1) {
+  if (listen(m_serverSock, 3) == -1) {
     m_logger.logErr("Unable to set listen.");
     exit(EXIT_FAILURE);
   }
 
   while (m_serverRunning) {
-    // move to socket listening instead
-    socklen_t remoteLen = sizeof(remote);
     m_logger.log("Waiting for connections");
 
-    // wait until receive client: TODO wrong if sending quit don't want to wait
-    m_clientId =
-        accept(m_socketId, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
+    struct sockaddr_un remote;
+    socklen_t remoteLen = sizeof(remote);
+    // fill out received client address binding
+    m_clientSock =
+        accept(m_serverSock, reinterpret_cast<sockaddr *>(&remote), &remoteLen);
+
     // set socket to be nonblocking
-    if (fcntl(m_clientId, F_SETFL,
-              fcntl(m_clientId, F_GETFL, 0) | O_NONBLOCK) == -1) {
+    if (fcntl(m_clientSock, F_SETFL,
+              fcntl(m_clientSock, F_GETFL, 0) | O_NONBLOCK) == -1) {
       m_logger.logErr("Unable to set socket to nonblocking");
       exit(EXIT_FAILURE);
     }
-    m_logger.log("Received connection" + std::to_string(m_clientId));
+    m_logger.log("Received connection" + std::to_string(m_clientSock));
 
     // now do poll loop waiting for message from pair
     std::array<struct pollfd, 1> pollFds;
-    pollFds[0].fd = m_clientId;
+    pollFds[0].fd = m_clientSock;
     pollFds[0].events = POLLIN | POLLHUP;
     ;
 
@@ -362,7 +362,7 @@ void FoldersManager::serverStart() {
       m_logger.log("Client message ready to read");
       ServerCommands command; // prepare for reading from socket
 
-      int num = recv(m_clientId, &command, sizeof(command), 0);
+      int num = recv(m_clientSock, &command, sizeof(command), 0);
       if (num < 0) {
         m_logger.logErr("Failed at recv");
         exit(EXIT_FAILURE);
@@ -372,16 +372,15 @@ void FoldersManager::serverStart() {
       }
       m_logger.log("Received value: " + std::to_string(command));
 
-      handleMessage(m_clientId, command);
-      close(m_clientId); // TODO add this? Not sure if we also want to terminate
-                         // the connection here, but prob
+      handleMessage(m_clientSock, command);
+      close(m_clientSock);
     }
   }
 }
 
 void FoldersManager::serverStop() {
   // TODO note we are just looping so just tidy up then exit
-  close(m_clientId);
+  close(m_clientSock);
   m_serverRunning = false;
   m_logger.log("Quitting from client request");
 }
@@ -400,13 +399,6 @@ void FoldersManager::handleMessage(int fd, ServerCommands command) {
   switch (command) {
   case ServerListFiles: {
     // return a string of all new files
-
-    // for (auto &scanner : m_trackedFoldersScanners) {
-    //   std::vector<fs::path> newfiles = scanner.getNewFiles();
-    //   for (auto &file : newfiles) {
-    //     listFiles = listFiles + "," + file.string();
-    //   }
-    // }
     auto newFiles = getNewFiles();
     std::string listFiles;
     listFiles = std::accumulate(newFiles.begin(), newFiles.end(), listFiles,
@@ -497,13 +489,13 @@ void FoldersManagerClient::connect() {
       sizeof(remoteAddr.sun_family) + strlen(remoteAddr.sun_path) + 1;
   // + 1 for null terminator
 
-  if ((m_socketId = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+  if ((m_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
     std::cerr << "client socket() call error\n";
     exit(EXIT_FAILURE);
   }
 
   // need global scope resolver for connect()
-  if (::connect(m_socketId, reinterpret_cast<sockaddr *>(&remoteAddr),
+  if (::connect(m_sock, reinterpret_cast<sockaddr *>(&remoteAddr),
                 remoteAddr.sun_len) == -1) {
     std::cerr << "client connect() call error\n";
     exit(EXIT_FAILURE);
@@ -520,30 +512,14 @@ std::string FoldersManagerClient::getServerNewFiles() {
   connect();
 
   sendCommand(ServerListFiles);
-  // ServerCommands value = ServerCommands::ServerListFiles;
-  // if (send(m_socketId, &value, sizeof(value), 0) == -1) {
-  //   std::cerr << "send() error " << strerror(errno) << "\n";
-  // }
 
-  // std::string out;
-  // char recvData[100];
-  // memset(recvData, 0, sizeof(recvData));
-  // // need to read until some sort of end signal from the server... separate
-  // from
-  // // other commands
-  // while (recv(m_socketId, recvData, sizeof(recvData), 0) > 0) {
-  //   std::cout << recvData;
-  //   out = out + recvData;
-  //   memset(recvData, 0, sizeof(recvData)); // TODO unsure maybe need to clear
-  //   // std::cerr << "recv() error\n";
-  // }
-  std::string out = recvString(m_socketId);
+  std::string out = recvString(m_sock);
   disconnect();
   return out;
 }
 
 int FoldersManagerClient::sendCommand(ServerCommands command) {
-  int ret = send(m_socketId, &command, sizeof(command), 0);
+  int ret = send(m_sock, &command, sizeof(command), 0);
   if (ret == -1) {
     std::cerr << "send() error " << strerror(errno) << "\n";
   }
@@ -556,7 +532,7 @@ std::string FoldersManagerClient::doServerQuit() {
 
   sendCommand(ServerQuit);
 
-  std::string out = recvString(m_socketId);
+  std::string out = recvString(m_sock);
   disconnect();
   return out;
 }
@@ -564,7 +540,7 @@ std::string FoldersManagerClient::doServerQuit() {
 void FoldersManagerClient::disconnect() {
   // don't stop server, but tell it we are done and closing our connection so it
   // waits for someone new
-  close(m_socketId); // TODO add error or status check
+  close(m_sock); // TODO add error or status check
 }
 
 }; // namespace AN
