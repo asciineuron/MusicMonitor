@@ -308,25 +308,12 @@ void FoldersManager::stop() {
   m_runner.join();
 }
 
-void unlinkSocket() { unlink(SocketAddr.c_str()); }
-
 void FoldersManager::serverStart() {
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
   m_socketId = socket(AF_UNIX, SOCK_STREAM, 0);
   if (m_socketId == 1) {
     m_logger.logErr("Unable to open socket.");
-    exit(EXIT_FAILURE);
-  }
-  const int sockoptOn = 1;
-  struct linger sockoptLinger = {0, 0};
-  if ((setsockopt(m_socketId, SOL_SOCKET, SO_REUSEADDR, &sockoptOn,
-                  sizeof(sockoptOn)) == -1) ||
-      (setsockopt(m_socketId, SOL_SOCKET, SO_REUSEPORT, &sockoptOn,
-                  sizeof(sockoptOn)) == -1) ||
-      (setsockopt(m_socketId, SOL_SOCKET, SO_LINGER, &sockoptLinger,
-                  sizeof(sockoptLinger)) == -1)) {
-    m_logger.logErr("Failed to call setsockopt()");
     exit(EXIT_FAILURE);
   }
 
@@ -347,11 +334,6 @@ void FoldersManager::serverStart() {
   if (bind(m_socketId, (struct sockaddr *)&local, local.sun_len) == -1) {
     m_logger.logErr("Unable to bind socket to address: " + SocketAddr + "\n" +
                     strerror(errno));
-    exit(EXIT_FAILURE);
-  }
-
-  if (atexit(unlinkSocket) == -1) {
-    m_logger.logErr("Unable to link atexit()");
     exit(EXIT_FAILURE);
   }
 
