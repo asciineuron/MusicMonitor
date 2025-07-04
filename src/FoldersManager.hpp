@@ -13,12 +13,11 @@
 namespace AN {
 namespace fs = std::filesystem;
 
-// const std::string SocketAddr{"/home/aleshapp/mysocket"};
 // might not have write access outside parent folder due to apple...
 extern std::string SocketAddr;
 
-// convert file time to posix time number
-time_t fsToPosixTime(fs::file_time_type time);
+// get last modified time from file name
+time_t getFileTime(fs::path path);
 
 // checks if checkParent is the initial subset of child i.e. a parent to it
 bool isParentDir(const fs::path checkParent, const fs::path child);
@@ -30,11 +29,15 @@ public:
   // don't scan yet since blocks callback? maybe actually ok
   // TODO separate out to precheck, do scan wait later
   FolderScanner(fs::path directory);
+  FolderScanner(fs::path directory, BackupManager *backupManager);
+  ~FolderScanner();
 
   int scan();
   int scan(const fs::path subdir); // for FSEvents, if subdir is under dir root,
                                    // just scan that part (speedup)
   std::vector<fs::path> getNewFiles() const;
+  std::vector<std::pair<fs::path, time_t>> getFilesAndTimes() const; // get all files and their times
+  fs::path getRoot() const;
 
 private:
   std::filesystem::path m_directoryRoot;
@@ -43,7 +46,7 @@ private:
       m_files;
   std::vector<std::string> m_filetypeFilter{{".flac"}, {".txt"}};
   bool isValidExtension(const fs::directory_entry &entry);
-  BackupManager *m_backupManager; // Managed by FoldersManager
+  BackupManager *m_backupManager{}; // Managed by FoldersManager
   // internal function to do actual indexing starting at dir
   int scanDir(const fs::path subdir);
   void restoreContents(); // use BackupManager when first starting up
@@ -77,10 +80,13 @@ public:
   std::vector<fs::path>
   getNewFiles(); // returns list of new files in last batch
 
+  FSEventStreamEventId getLatestEventId() { return m_latestEventId; }
+
 private:
   // need to handle e.g. ctrl z signal to know to put it in background and write
   // to log instead
   Log::Logger m_logger;
+  std::unique_ptr<BackupManager> m_backupManager;
 
   // for server use, client FoldersManagerClient has own copy
   int m_serverSock;
@@ -97,7 +103,7 @@ private:
   std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
 
   fs::path m_converterExe{"/bin/echo"}; // name/path of conversion executable
-  fs::path m_logFile{}; // where to load/save latest event id etc
+  fs::path m_logFile{"musicmonitorbackup"}; // where to load/save latest event id etc
 
   void quitThread();
   // thread will be waiting for read(), handle and process it here depending on

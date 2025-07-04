@@ -1,4 +1,5 @@
 #include "FoldersManager.hpp"
+#include "BackupManager.hpp"
 
 #include <algorithm>
 #include <array>
@@ -6,8 +7,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <poll.h>
@@ -18,6 +21,7 @@
 #include <tuple>
 #include <unistd.h>
 #include <vector>
+#include <sys/stat.h>
 
 namespace AN {
 namespace fs = std::filesystem;
@@ -107,12 +111,38 @@ void fileListExecutor(const fs::path &command,
   }
 }
 
+std::vector<std::pair<fs::path, time_t>>
+FolderScanner::getFilesAndTimes() const {
+  std::vector<std::pair<fs::path, time_t>> filesAndTimes;
+  for (auto &elem : m_files) {
+    filesAndTimes.emplace_back(std::pair(elem.first, elem.second.second));
+  }
+  return filesAndTimes;
+}
+
+fs::path FolderScanner::getRoot() const { return m_directoryRoot; }
+
+FolderScanner::~FolderScanner() {
+  if (m_backupManager)
+    m_backupManager->getFolderScannerUpdate(*this);
+}
+
+FolderScanner::FolderScanner(fs::path directory, BackupManager *backupManager)
+    : m_directoryRoot(directory), m_backupManager(backupManager) {
+  restoreContents();
+  scan(); // still need to check for newer files since then in case any files preceeding event id update
+}
+
 FolderScanner::FolderScanner(fs::path directory) : m_directoryRoot(directory) {
   restoreContents();
-  if (scan() == -1) {
-    std::cerr << "Scan failed\n";
-    exit(EXIT_FAILURE);
-  }
+  scan(); // still need to check for newer files since then in case any files preceeding event id update
+}
+
+time_t getFileTime(fs::path path) {
+  // returns last *access* time
+  struct stat attributes;
+  stat(path.c_str(), &attributes);
+  return attributes.st_atime;
 }
 
 bool isParentDir(const fs::path checkParent, const fs::path child) {
@@ -130,16 +160,15 @@ void FolderScanner::restoreContents() {
   if (!m_backupManager)
     return;
   // not yet tracking here, start fresh
-  if (!!m_backupManager->isMonitoredRoot(m_directoryRoot))
+  if (!m_backupManager->isMonitoredRoot(m_directoryRoot))
     return;
 
   auto loadedTimes = m_backupManager->getRootMonitoredFiles(m_directoryRoot);
-  m_files.insert_range(
-      loadedTimes |
-      std::views::transform([](auto pathTime) {
-        return std::tuple(pathTime.first,
-                          std::tuple(FileUpdateType::Old, pathTime.second));
-      }));
+  m_files.insert_range(loadedTimes | std::views::transform([](auto pathTime) {
+                         return std::tuple(
+                             pathTime.first,
+                             std::tuple(FileUpdateType::Old, pathTime.second));
+                       }));
 }
 
 int FolderScanner::scanDir(const fs::path subdir) {
@@ -149,7 +178,7 @@ int FolderScanner::scanDir(const fs::path subdir) {
       continue;
 
     FileUpdateType type;
-    time_t entryPosixTime = fsToPosixTime(entry.last_write_time());
+    time_t entryPosixTime = getFileTime(entry.path());
     bool wasTracked = m_files.contains(entry.path());
 
     auto &updateFile = m_files[entry.path()]; // get or insert in either case...
@@ -226,9 +255,11 @@ void FoldersManager::quitEventStream() {
 void FoldersManager::addFolders(std::span<fs::path> folderNames) {
   // update file list, then close and restart event stream
   // add unique elements packed as a tuple
+  // TODO does this instantiate folderscanner for duplicate elements, and then
+  // delete, or skip altogether?
   m_trackedFoldersAndScanners.insert_range(
-      folderNames | std::views::transform([](auto f) {
-        return std::tuple(f, FolderScanner(f));
+      folderNames | std::views::transform([this](auto f) {
+        return std::tuple(f, FolderScanner(f, m_backupManager.get()));
       }));
 
   quitEventStream();
@@ -249,15 +280,16 @@ void FoldersManager::createEventStream() {
                        CFRangeMake(0, 1)); // check rangemake second argument,
                                            // 1 elem or length of string data?
     CFAbsoluteTime latency = 3.0;          // TODO control later?
-    {                                      // scope infilelog
-      std::ifstream infilelog(m_logFile, std::ios::in);
-      if (infilelog >> m_latestEventId) {
-        std::cout << "restoring latest event id: " << m_latestEventId;
-      } else {
-        m_logger.log("starting timestamp now");
-        m_latestEventId = kFSEventStreamEventIdSinceNow;
-      }
-    }
+    // {                                      // scope infilelog
+    //   std::ifstream infilelog(m_logFile, std::ios::in);
+    //   if (infilelog >> m_latestEventId) {
+    //     std::cout << "restoring latest event id: " << m_latestEventId;
+    //   } else {
+    //     m_logger.log("starting timestamp now");
+    //     m_latestEventId = kFSEventStreamEventIdSinceNow;
+    //   }
+    // }
+    m_latestEventId = m_backupManager->getLastObservedEventId();
     m_stream =
         FSEventStreamCreate(NULL, &callback, nullptr, paths, m_latestEventId,
                             latency, kFSEventStreamCreateFlagNone);
@@ -272,6 +304,10 @@ void FoldersManager::createEventStream() {
 
 FoldersManager::FoldersManager() : m_logger(STDOUT_FILENO) {
   m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_SERIAL);
+
+  m_logFile = fs::current_path() / m_logFile;
+
+  m_backupManager = std::make_unique<JsonManager>(m_logFile);
 }
 
 FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
@@ -287,6 +323,9 @@ FoldersManager::~FoldersManager() {
   }
   quitEventStream();
   dispatch_release(m_queue);
+
+  m_backupManager->getFolderManagerUpdate(*this);
+  m_backupManager->updateBackup();
 }
 
 void FoldersManager::run() {
