@@ -54,7 +54,6 @@ public:
   virtual void updateBackup() = 0;
 };
 
-
 class JsonManager : public BackupManager {
 public:
   JsonManager() {};
@@ -74,7 +73,9 @@ public:
 
 private:
   fs::path m_backupFile{}; // file to source from/to
-  Json m_json{}; // loaded from file into json
+  // loaded from file into json (keep separate from output for backup/crash)
+  Json m_jsonIn{};
+  Json m_jsonOut{};
 };
 
 } // namespace AN
