@@ -28,13 +28,14 @@ class FolderScanner {
 public:
   // don't scan yet since blocks callback? maybe actually ok
   // TODO separate out to precheck, do scan wait later
-  FolderScanner(fs::path directory);
-  FolderScanner(fs::path directory, BackupManager *backupManager);
-  ~FolderScanner();
+  explicit FolderScanner(fs::path directory);
+  explicit FolderScanner(fs::path directory, BackupManager *backupManager);
+
 
   int scan();
   int scan(const fs::path subdir); // for FSEvents, if subdir is under dir root,
                                    // just scan that part (speedup)
+
   std::vector<fs::path> getNewFiles() const;
   std::vector<std::pair<fs::path, time_t>> getFilesAndTimes() const; // get all files and their times
   fs::path getRoot() const;
@@ -46,7 +47,7 @@ private:
       m_files;
   std::vector<std::string> m_filetypeFilter{{".flac"}, {".txt"}};
   bool isValidExtension(const fs::directory_entry &entry);
-  BackupManager *m_backupManager{}; // Managed by FoldersManager
+  BackupManager *m_backupManager{}; // Managed by FoldersManager. Here just for restoring, Manager does writeout, querying me
   // internal function to do actual indexing starting at dir
   int scanDir(const fs::path subdir);
   void restoreContents(); // use BackupManager when first starting up

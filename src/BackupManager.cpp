@@ -25,7 +25,7 @@ JsonManager::getRootMonitoredFiles(fs::path path) {
 
     for (const Json &jPathsAndTimes : folderScanner["paths_and_times"]) {
       fs::path path(jPathsAndTimes["path"]);
-      time_t time(std::stoi(static_cast<std::string>(jPathsAndTimes["time"])));
+      time_t time(jPathsAndTimes["time"].template get<int>());
 
       pathsAndTimes.emplace_back(std::tuple(path, time));
     }
@@ -39,11 +39,11 @@ FSEventStreamEventId JsonManager::getLastObservedEventId() {
   // kFSEventStreamEventIdSinceNow;
   FSEventStreamEventId lastEvent;
   if (m_json.contains("lasteventid")) {
+    lastEvent = static_cast<FSEventStreamEventId>(m_json["lasteventid"].template get<FSEventStreamEventId>());
     std::cout << "restoring latest event id: " << lastEvent;
-    lastEvent = static_cast<FSEventStreamEventId>(m_json["lasteventid"]);
   } else {
-    std::cout << "starting timestamp now\n";
     lastEvent = kFSEventStreamEventIdSinceNow;
+    std::cout << "starting timestamp now: " << lastEvent << "\n";
   }
   return lastEvent;
 }
@@ -57,8 +57,10 @@ JsonManager::JsonManager(fs::path backupFile) {
 }
 
 void JsonManager::updateBackup() {
-  std::ofstream backupFileOut(m_backupFile);
-  backupFileOut << m_json.dump(4);
+  // remove existing backup
+  std::ofstream backupFileOut(m_backupFile, std::ios::trunc);
+  // tab=2spaces
+  backupFileOut << m_json.dump(2);
 }
 
 void JsonManager::getFolderScannerUpdate(FolderScanner &scanner) {
@@ -66,13 +68,15 @@ void JsonManager::getFolderScannerUpdate(FolderScanner &scanner) {
   fs::path root = scanner.getRoot();
   Json entry;
   entry["folder_root"] = root;
-  for (std::pair<fs::path, time_t> &fileAndTime : filesAndTimes) {
+  for (const std::pair<fs::path, time_t> &fileAndTime : filesAndTimes) {
     Json fileEntry;
     fileEntry["path"] = fileAndTime.first.string();
     fileEntry["time"] = fileAndTime.second;
     entry["paths_and_times"].push_back(fileEntry);
   }
-  m_json["folder_scan_list"].push_back(entry);
+  if (entry.contains("paths_and_times")) {
+    m_json["folder_scan_list"].push_back(entry);
+  }
 }
 
 void JsonManager::getFolderManagerUpdate(FoldersManager &manager) {

@@ -18,10 +18,10 @@
 #include <string>
 #include <sys/poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <tuple>
 #include <unistd.h>
 #include <vector>
-#include <sys/stat.h>
 
 namespace AN {
 namespace fs = std::filesystem;
@@ -115,6 +115,7 @@ std::vector<std::pair<fs::path, time_t>>
 FolderScanner::getFilesAndTimes() const {
   std::vector<std::pair<fs::path, time_t>> filesAndTimes;
   for (auto &elem : m_files) {
+    std::cout << elem.first << ";" << elem.second.second << "\n";
     filesAndTimes.emplace_back(std::pair(elem.first, elem.second.second));
   }
   return filesAndTimes;
@@ -122,20 +123,17 @@ FolderScanner::getFilesAndTimes() const {
 
 fs::path FolderScanner::getRoot() const { return m_directoryRoot; }
 
-FolderScanner::~FolderScanner() {
-  if (m_backupManager)
-    m_backupManager->getFolderScannerUpdate(*this);
-}
-
 FolderScanner::FolderScanner(fs::path directory, BackupManager *backupManager)
     : m_directoryRoot(directory), m_backupManager(backupManager) {
   restoreContents();
-  scan(); // still need to check for newer files since then in case any files preceeding event id update
+  scan(); // still need to check for newer files since then in case any files
+          // preceeding event id update
 }
 
 FolderScanner::FolderScanner(fs::path directory) : m_directoryRoot(directory) {
   restoreContents();
-  scan(); // still need to check for newer files since then in case any files preceeding event id update
+  scan(); // still need to check for newer files since then in case any files
+          // preceeding event id update
 }
 
 time_t getFileTime(fs::path path) {
@@ -257,11 +255,18 @@ void FoldersManager::addFolders(std::span<fs::path> folderNames) {
   // add unique elements packed as a tuple
   // TODO does this instantiate folderscanner for duplicate elements, and then
   // delete, or skip altogether?
-  m_trackedFoldersAndScanners.insert_range(
-      folderNames | std::views::transform([this](auto f) {
-        return std::tuple(f, FolderScanner(f, m_backupManager.get()));
-      }));
+  // m_trackedFoldersAndScanners.insert_range(
+  //     folderNames | std::views::transform([this](auto f) {
+  //       return std::tuple(f, FolderScanner(f, m_backupManager.get()));
+  //     }));
 
+  // TODO this did not fix the duplication error
+  for (const auto &path : folderNames) {
+    if (!m_trackedFoldersAndScanners.contains(path)) {
+      m_trackedFoldersAndScanners.emplace(std::tuple(
+          path, std::move(FolderScanner(path, m_backupManager.get()))));
+    }
+  }
   quitEventStream();
   createEventStream();
 }
@@ -325,6 +330,10 @@ FoldersManager::~FoldersManager() {
   dispatch_release(m_queue);
 
   m_backupManager->getFolderManagerUpdate(*this);
+  // query final backup data from managed scanners
+  for (auto &foldersAndScanner : m_trackedFoldersAndScanners) {
+    m_backupManager->getFolderScannerUpdate(foldersAndScanner.second);
+  }
   m_backupManager->updateBackup();
 }
 

@@ -73,7 +73,7 @@ public:
   void updateBackup() override;
 
 private:
-  fs::path m_backupFile{}; // file to source from
+  fs::path m_backupFile{}; // file to source from/to
   Json m_json{}; // loaded from file into json
 };
 
