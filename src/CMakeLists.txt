@@ -4,4 +4,6 @@ add_executable(MusicMonitor main.cpp
                             FoldersManager.hpp
                             FoldersManager.cpp
                             BackupManager.hpp
-                            BackupManager.cpp)
+                            BackupManager.cpp
+                            SettingsManager.hpp
+                            SettingsManager.cpp)

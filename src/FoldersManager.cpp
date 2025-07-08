@@ -1,5 +1,6 @@
 #include "FoldersManager.hpp"
 #include "BackupManager.hpp"
+#include "SettingsManager.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,7 +36,8 @@ std::mutex doScanMutex;
 bool doScan;
 
 void fileListExecutor(const fs::path &command,
-                      std::span<const fs::path> filenames, bool doParallel) {
+                      std::span<const fs::path> filenames, bool doParallel,
+                      bool keep) {
   // void fileListExecutor(const fs::path &command,
   //                       std::set<fs::path> filenames, bool doParallel) {
   const int commandLen = strlen(command.c_str());
@@ -107,6 +109,15 @@ void fileListExecutor(const fs::path &command,
         std::cerr << "Error waiting for pid: " << ps << "\n";
         exit(EXIT_FAILURE);
       }
+    }
+  }
+
+  // finished, delete original file if requested
+  if (!keep) {
+    for (const fs::path &file : filenames) {
+      // TODO replace with rm when done
+      std::string cmdStr = "echo " + file.string();
+      system(cmdStr.c_str());
     }
   }
 }
@@ -253,14 +264,9 @@ void FoldersManager::quitEventStream() {
 void FoldersManager::addFolders(std::span<fs::path> folderNames) {
   // update file list, then close and restart event stream
   // add unique elements packed as a tuple
-  // TODO does this instantiate folderscanner for duplicate elements, and then
-  // delete, or skip altogether?
-  // m_trackedFoldersAndScanners.insert_range(
-  //     folderNames | std::views::transform([this](auto f) {
-  //       return std::tuple(f, FolderScanner(f, m_backupManager.get()));
-  //     }));
 
-  // TODO this did not fix the duplication error
+  // This prevents creation of unneeded scanners if !contains path compared to
+  // fancy range approach
   for (const auto &path : folderNames) {
     if (!m_trackedFoldersAndScanners.contains(path)) {
       m_trackedFoldersAndScanners.emplace(std::tuple(
@@ -285,15 +291,7 @@ void FoldersManager::createEventStream() {
                        CFRangeMake(0, 1)); // check rangemake second argument,
                                            // 1 elem or length of string data?
     CFAbsoluteTime latency = 3.0;          // TODO control later?
-    // {                                      // scope infilelog
-    //   std::ifstream infilelog(m_logFile, std::ios::in);
-    //   if (infilelog >> m_latestEventId) {
-    //     std::cout << "restoring latest event id: " << m_latestEventId;
-    //   } else {
-    //     m_logger.log("starting timestamp now");
-    //     m_latestEventId = kFSEventStreamEventIdSinceNow;
-    //   }
-    // }
+
     m_latestEventId = m_backupManager->getLastObservedEventId();
     m_stream =
         FSEventStreamCreate(NULL, &callback, nullptr, paths, m_latestEventId,
@@ -310,9 +308,13 @@ void FoldersManager::createEventStream() {
 FoldersManager::FoldersManager() : m_logger(STDOUT_FILENO) {
   m_queue = dispatch_queue_create(nullptr, DISPATCH_QUEUE_SERIAL);
 
+  // convert to absolute file path
   m_logFile = fs::current_path() / m_logFile;
-
   m_backupManager = std::make_unique<JsonManager>(m_logFile);
+
+  // convert to absolute file path
+  m_fileTypeFile = fs::current_path() / m_fileTypeFile;
+  loadFileTypes();
 }
 
 FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
@@ -371,7 +373,20 @@ void FoldersManager::run() {
       }
 
       // pass to executor
-      fileListExecutor(this->m_converterExe, filesToProcess, false);
+      // filter based on settings which cmd and whether to keep
+      for (auto &fileSetting : m_fileTypes) {
+        // filter files to match this particular extension + settings:
+        std::vector<fs::path> filteredFiles;
+        filteredFiles.append_range(
+            filesToProcess | std::views::filter([&fileSetting](auto f) {
+              return f.extension() == fileSetting.extension;
+            }));
+
+        std::cout << "executing for extension:" << fileSetting.extension
+                  << "\n";
+        fileListExecutor(fileSetting.cmd, filteredFiles, false,
+                         fileSetting.keep);
+      }
     }
     m_logger.log("NOTE I am quitting nicely");
   });
@@ -510,6 +525,11 @@ void FoldersManager::handleMessage(int fd, ServerCommands command) {
   default:
     break;
   }
+}
+
+void FoldersManager::loadFileTypes() {
+  SettingsManager settingsManager(m_fileTypeFile);
+  m_fileTypes = settingsManager.getFileSettings();
 }
 
 void FoldersManager::quitThread() {

@@ -22,6 +22,13 @@ time_t getFileTime(fs::path path);
 // checks if checkParent is the initial subset of child i.e. a parent to it
 bool isParentDir(const fs::path checkParent, const fs::path child);
 
+// recognized types, what exe to run, and whether to keep after processing
+struct FileSettings {
+  std::string extension;
+  fs::path cmd{"/bin/echo"};
+  bool keep{true};
+};
+
 class FolderScanner {
   // TODO break down so FSEvents gives which specific sub folders changed. if so
   // only scan those, not whole thing (only needed for subfolder)
@@ -31,23 +38,24 @@ public:
   explicit FolderScanner(fs::path directory);
   explicit FolderScanner(fs::path directory, BackupManager *backupManager);
 
-
   int scan();
   int scan(const fs::path subdir); // for FSEvents, if subdir is under dir root,
                                    // just scan that part (speedup)
 
   std::vector<fs::path> getNewFiles() const;
-  std::vector<std::pair<fs::path, time_t>> getFilesAndTimes() const; // get all files and their times
+  std::vector<std::pair<fs::path, time_t>>
+  getFilesAndTimes() const; // get all files and their times
   fs::path getRoot() const;
 
 private:
   std::filesystem::path m_directoryRoot;
   enum FileUpdateType { New, Updated, Old };
-  std::unordered_map<fs::path, std::pair<FileUpdateType, time_t>>
-      m_files;
+  std::unordered_map<fs::path, std::pair<FileUpdateType, time_t>> m_files;
   std::vector<std::string> m_filetypeFilter{{".flac"}, {".txt"}};
   bool isValidExtension(const fs::directory_entry &entry);
-  BackupManager *m_backupManager{}; // Managed by FoldersManager. Here just for restoring, Manager does writeout, querying me
+  BackupManager
+      *m_backupManager{}; // Managed by FoldersManager. Here just for restoring,
+                          // Manager does writeout, querying me
   // internal function to do actual indexing starting at dir
   int scanDir(const fs::path subdir);
   void restoreContents(); // use BackupManager when first starting up
@@ -66,7 +74,9 @@ std::string recvString(int fd);
 
 class FoldersManager {
 public:
+  // call this one to temporarily run at input folders:
   FoldersManager(std::vector<fs::path> folderNames);
+  // call this one to run from setup file:
   FoldersManager(); // TODO need to refactor so can add more folders iteratively
                     // later
   ~FoldersManager();
@@ -102,9 +112,11 @@ private:
   dispatch_queue_t m_queue{nullptr};
   // this keeps them unique and easily tracked together:
   std::unordered_map<fs::path, FolderScanner> m_trackedFoldersAndScanners;
+  std::vector<FileSettings> m_fileTypes;
 
-  fs::path m_converterExe{"/bin/echo"}; // name/path of conversion executable
-  fs::path m_logFile{"musicmonitorbackup"}; // where to load/save latest event id etc
+  fs::path m_logFile{
+      "musicmonitorbackup"}; // where to load/save latest event id etc
+  fs::path m_fileTypeFile{"filetype_settings.json"}; // where to source SettingsManager from
 
   void quitThread();
   // thread will be waiting for read(), handle and process it here depending on
@@ -113,6 +125,7 @@ private:
   void handleMessage(int fd, ServerCommands command);
   void quitEventStream();
   void createEventStream();
+  void loadFileTypes(); // set up m_fileTypes data
 };
 
 class FoldersManagerClient {
