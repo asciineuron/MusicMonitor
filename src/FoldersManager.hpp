@@ -103,10 +103,11 @@ private:
   int m_serverSock;
   int m_clientSock;
   // to start/stop network thread
-  bool m_serverRunning{false};
+  bool m_isServerRunning{false};
 
-  std::atomic_bool isRunning{false};
-  std::thread m_runner{};
+  std::atomic_bool m_isRunning{false};
+  std::thread m_runThread{};
+  std::thread m_serverThread{};
   FSEventStreamRef m_stream{nullptr};
   FSEventStreamEventId m_latestEventId;
   dispatch_queue_t m_queue{nullptr};

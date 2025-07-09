@@ -56,13 +56,9 @@ void Logger::log(std::string message, bool disable) {
     std::cerr << applyStyle(styles) + "DEBUG: " + applyStyle(noStyles) +
                      message + "\n";
   } else {
-    std::vector<AnsiAttributes> styles = {AnsiItalic, AnsiUnderline};
-    auto noStyles = styles;
-    noStyles.emplace(noStyles.begin(), AnsiAttributes::AnsiNo);
-
     // TODO add date and time here
-    std::string formattedMessage =
-        applyStyle(styles) + "DEBUG: " + applyStyle(noStyles) + message + "\n";
+    // No ansi formatting if not a tty
+    std::string formattedMessage = "DEBUG: " + message + "\n";
 
     write(m_fd, formattedMessage.c_str(), formattedMessage.size());
   }
@@ -79,13 +75,8 @@ void Logger::logErr(std::string message, bool disable) {
     std::cerr << applyStyle(styles) + "ERROR: " + applyStyle(noStyles) +
                      message + "\n";
   } else {
-    std::vector<AnsiAttributes> styles = {AnsiBright, AnsiUnderline};
-    auto noStyles = styles;
-    noStyles.emplace(noStyles.begin(), AnsiAttributes::AnsiNo);
-
     // TODO add date and time here
-    std::string formattedMessage =
-        applyStyle(styles) + "ERROR: " + applyStyle(noStyles) + message + "\n";
+    std::string formattedMessage = "ERROR: " + message + "\n";
 
     write(m_fd, formattedMessage.c_str(), formattedMessage.size());
   }

@@ -26,7 +26,6 @@
 
 namespace AN {
 namespace fs = std::filesystem;
-namespace ranges = std::ranges;
 
 // filename in temp directory for socket communication
 std::string SocketAddr;
@@ -325,7 +324,7 @@ FoldersManager::FoldersManager(std::vector<fs::path> folderNames)
 }
 
 FoldersManager::~FoldersManager() {
-  if (isRunning.load()) {
+  if (m_isRunning.load()) {
     stop();
   }
   quitEventStream();
@@ -340,10 +339,13 @@ FoldersManager::~FoldersManager() {
 }
 
 void FoldersManager::run() {
+  // redirect log to whatever stdin is in case I was daemonized
+  // TODO maybe not needed
+  m_logger.changeFd(STDIN_FILENO);
   // isRunning = true;
-  isRunning.store(true);
+  m_isRunning.store(true);
   // launch a thread
-  m_runner = std::thread([this]() {
+  m_runThread = std::thread([this]() {
     while (1) {
       {
         std::lock_guard<std::mutex> lock(doScanMutex);
@@ -355,7 +357,7 @@ void FoldersManager::run() {
       doScanCV.wait(uniqueLock, []() { return doScan; });
       uniqueLock.unlock(); // wait leaves mutex locked so need to release
 
-      if (!isRunning.load())
+      if (!m_isRunning.load())
         break;
 
       std::vector<fs::path> filesToProcess;
@@ -394,11 +396,11 @@ void FoldersManager::run() {
 
 void FoldersManager::stop() {
   quitThread();
-  m_runner.join();
+  m_runThread.join();
 }
 
 void FoldersManager::serverStart() {
-  m_serverRunning = true;
+  m_isServerRunning = true;
   // make enum of recognized signals, separate out server class which dispatches
   // these commands to here, read from the socket
   m_serverSock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -429,7 +431,7 @@ void FoldersManager::serverStart() {
     exit(EXIT_FAILURE);
   }
 
-  while (m_serverRunning) {
+  while (m_isServerRunning) {
     m_logger.log("Waiting for connections");
 
     struct sockaddr_un remote;
@@ -487,7 +489,7 @@ void FoldersManager::serverStart() {
 void FoldersManager::serverStop() {
   // TODO note we are just looping so just tidy up then exit
   close(m_clientSock);
-  m_serverRunning = false;
+  m_isServerRunning = false;
   m_logger.log("Quitting from client request");
 }
 
@@ -534,7 +536,7 @@ void FoldersManager::loadFileTypes() {
 
 void FoldersManager::quitThread() {
   // send stop to worker thread
-  isRunning.store(false);
+  m_isRunning.store(false);
   {
     // signal scan to break guard
     std::lock_guard<std::mutex> lock(doScanMutex);

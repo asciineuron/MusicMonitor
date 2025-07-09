@@ -1,30 +1,21 @@
 #include "FoldersManager.hpp"
 #include "Log.hpp"
 #include <CoreServices/CoreServices.h>
-#include <algorithm>
-#include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <ftw.h>
 #include <getopt.h>
 #include <iostream>
-#include <mutex>
 #include <poll.h>
-#include <ranges>
 #include <signal.h>
 #include <span>
 #include <string>
-#include <string_view>
 #include <sys/termios.h>
 #include <system_error>
 #include <termios.h>
-#include <thread>
 #include <unistd.h> //STDIN_FILENO
-#include <unordered_map>
 
 namespace fs = std::filesystem;
 // namespace ranges = std::ranges;
@@ -49,7 +40,7 @@ int main(int argc, char *argv[]) {
   sigset_t set;
   sigemptyset(&set);
   if (pthread_sigmask(SIG_SETMASK, &set, nullptr) == -1) {
-        logger.logErr("pthread_sigmask() error: " + std::string(strerror(errno)));
+    logger.logErr("pthread_sigmask() error: " + std::string(strerror(errno)));
   }
 
   // handle sigint (move to handling thread)
@@ -94,34 +85,32 @@ int main(int argc, char *argv[]) {
   }
 
   // launch actual program if we aren't a client
-  AN::FoldersManager folderManager;
   bool isClient = !runAsServer && !runOnTty;
-
+  std::vector<fs::path> folderManagerPaths;
   if (!isClient) {
     // if not interacting with server, we are launching the script so need to
-    // read
-    // input files:
-    std::vector<fs::path> paths;
+    // read input files:
     size_t path_idx = 0;
     for (int i = optind; i < argc; ++i) {
       logger.log("Tracking " + std::string(argv[i]));
-      paths.emplace_back(fs::path(argv[i]));
+      folderManagerPaths.emplace_back(fs::path(argv[i]));
       std::error_code ec;
-      if (!fs::is_directory(paths[path_idx], ec)) {
-        std::cerr << "Input '" << paths[path_idx]
+      if (!fs::is_directory(folderManagerPaths[path_idx], ec)) {
+        std::cerr << "Input '" << folderManagerPaths[path_idx]
                   << "' is not a valid directory path\n";
         std::cerr << "Error: " << ec.value() << ", " << ec.message() << "\n";
         exit(EXIT_FAILURE);
       }
       ++path_idx;
     }
-
-    folderManager.addFolders(paths);
-    folderManager.run();
   }
 
   // set up user input or server-client socket handling
   if (runOnTty) {
+    AN::FoldersManager folderManager;
+    folderManager.addFolders(folderManagerPaths);
+    folderManager.run();
+
     struct termios termOld, termNew;
     tcgetattr(STDIN_FILENO, &termOld);
     termNew = termOld;
@@ -148,9 +137,35 @@ int main(int argc, char *argv[]) {
     tcsetattr(STDIN_FILENO, TCSANOW, &termOld); // disable
   } else {
     if (runAsServer) {
+      // set up detaching/daemon for server
+      fs::path daemonLog = fs::current_path() / "daemon_log.txt";
+      int fdout = open(daemonLog.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+      if (fdout == -1) {
+        logger.logErr("Failed to open daemon file, error: " +
+                      std::string(strerror(errno)) + "\n");
+      }
+
+      if (daemon(1, 0) == -1) {
+        std::cerr << "failed to run daemon()\n";
+        exit(EXIT_FAILURE);
+      }
+      // call run() *after* above, so log is redirected
+      // redirect stdout to log file
+      // TODO not sure if need to close after daemon(), but to be sure
+      close(STDOUT_FILENO);
+      dup(fdout);
+      // and stderr to same file
+      close(STDERR_FILENO);
+      dup(fdout);
+
+      // build after daemon to ensure stdin/out is correct
+      AN::FoldersManager folderManager;
+      folderManager.addFolders(folderManagerPaths);
+
+      folderManager.run();
+      // start listening loop on a socket for commands
       folderManager.serverStart();
-      // TODO set up detaching/daemon for server
-      // start listening on a socket for commands
+
     } else {
       // TODO use getopt to add client query commands eg 'list' 'add' etc
       logger.log("Connecting as client.");

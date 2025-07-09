@@ -25,7 +25,7 @@ void printFmt(const std::string_view str, std::vector<AnsiAttributes> styles);
 class Logger {
 public:
   // requires fd be an opened file managed elsewhere, this just formats to output
-  Logger(int fd = STDIN_FILENO);
+  Logger(int fd = STDOUT_FILENO);
 
   void log(std::string message, bool disable = false);
   void logErr(std::string message, bool disable = false);
